@@ -177,7 +177,12 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, run_fp16, d
     
     tm2 = time.time()
     time_per_batch = (tm2 - tm) / iterations
-
+    
+    if (run_fp16):
+        dtype = 'FP16'
+    else:
+        dtype = 'FP32'
+        
     print ("OK: finished running benchmark..")
     print ("--------------------SUMMARY--------------------------")
     print ("Microbenchmark for network : {}".format(net))
@@ -186,14 +191,16 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, run_fp16, d
       print ("Num devices: 1")
     else:
       print ("Num devices: {}".format(ngpus))
-    print ("Mini batch size [img] : {}".format(batch_size))
-    print ("Time per mini-batch : {}".format(time_per_batch))
-    print ("Throughput [img/sec] : {}".format(batch_size/time_per_batch))
+      print ("Dtype: {}".format(dtype))
+      print ("Mini batch size [img] : {}".format(batch_size))
+      print ("Time per mini-batch : {}".format(time_per_batch))
+      print ("Throughput [img/sec] : {}".format(batch_size/time_per_batch))
     if (distributed_dataparallel):
       print ("")
       print ("--------Overall (all ranks) (assuming same num/type devices for each rank)--------")
       world_size = distributed_parameters['world_size']
       print ("Num devices: {}".format(world_size))
+      print ("Dtype: {}".format(dtype))
       print ("Mini batch size [img] : {}".format(batch_size*world_size))
       print ("Time per mini-batch : {}".format(time_per_batch))
       print ("Throughput [img/sec] : {}".format(batch_size*world_size/time_per_batch))
