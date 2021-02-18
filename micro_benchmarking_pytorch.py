@@ -64,7 +64,7 @@ def get_network(net):
     elif (net == "shufflenet_v2_x10"):
         return torchvision.models.shufflenet_v2_x1_0().to(device="cuda")
     elif (net == "shufflenet_v2_x15"):
-        return torchvision.models.shufflenet_v2_x1_5().to(device="cuda")	
+        return torchvision.models.shufflenet_v2_x1_5().to(device="cuda")
     elif (net == "SqueezeNet"):
         return torchvision.models.squeezenet1_0().to(device="cuda")
     elif (net == "SqueezeNet1.1"):
@@ -154,7 +154,8 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, run_fp16, d
         inp = torch.randn(batch_size, 3, 224, 224, device="cuda")
     if (run_fp16):
         inp = inp.half()
-    target = torch.arange(batch_size, device="cuda")
+    # number of classes is 1000 for imagenet
+    target = torch.randint(0, 1000, (batch_size,), device="cuda")
     param_copy = network.parameters()
     if (run_fp16):
         param_copy = get_param_copy(network)
@@ -174,15 +175,15 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, run_fp16, d
     for i in range(iterations):
         forwardbackward(inp, optimizer, network, target)
     torch.cuda.synchronize()
-    
+
     tm2 = time.time()
     time_per_batch = (tm2 - tm) / iterations
-    
+
     if (run_fp16):
         dtype = 'FP16'
     else:
         dtype = 'FP32'
-        
+
     print ("OK: finished running benchmark..")
     print ("--------------------SUMMARY--------------------------")
     print ("Microbenchmark for network : {}".format(net))
@@ -233,7 +234,7 @@ def main():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--network", type=str, 
+    parser.add_argument("--network", type=str,
         choices=['alexnet', 'vgg11', 'vgg13', 'vgg16', 'vgg19', 'vgg11_bn', 'vgg13_bn', 'vgg16_bn', 'vgg19_bn', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152', 'shufflenet', 'shufflenet_v2_x05', 'shufflenet_v2_x10', 'shufflenet_v2_x15', 'SqueezeNet', 'SqueezeNet1.1', 'densenet121', 'densenet169', 'densenet201', 'densenet161', 'inception', 'inception_v3', 'resnext50', 'resnext101', 'mobilenet_v2', 'googlenet' , 'deeplabv3_resnet50', 'deeplabv3_resnet101', 'fcn_resnet50', 'fcn_resnet101' ],
         required=True, help="Network to run.")
     parser.add_argument("--batch-size" , type=int, required=False, default=64, help="Batch size (will be split among devices used by this invocation)")
