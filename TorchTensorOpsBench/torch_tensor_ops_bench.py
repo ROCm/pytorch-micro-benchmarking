@@ -74,7 +74,7 @@ def benchmark(op_str, args):
     dtype_str = "(" + args.dtype + ")" if args.append_dtype else ""
     op_meta = op_str + sparse_str + dtype_str + "(" + args.input1_dim
     op_args = []
-    
+
     if args.op_type == 'sparse':
         last_dim = input1_dim[-1]
         num_indices = int(args.input2_dim)
@@ -84,19 +84,19 @@ def benchmark(op_str, args):
         input2 = torch.cuda.sparse.FloatTensor(indices, values, size=input1_dim)
         op_args.append(input2)
         op_meta += "," + str(num_indices) + "-" + str(last_dim)
-    
+
     if op_str in binary_ops or args.op_type == 'binary':
         assert args.input2_dim, "input2_dim should be set for binary op - {}".format(op_str)
         input2_dim = [int(dim) for dim in args.input2_dim.split("-")]
         input2 = torch.randn(input2_dim, device=device, dtype=dtype)
         op_meta += "," + args.input2_dim
         op_args.append(input2)
-    
+
     op_meta += ")"
     args.op_meta = op_meta
     if args.inplace and ((op_str in binary_ops) or (op_str in unary_ops)) and op_str[-1] != '_':
         op_str += '_'  #inplace
-    
+
     op = getattr(input1, op_str)
 
     try:
@@ -105,7 +105,7 @@ def benchmark(op_str, args):
             op(*op_args)
 
         # main iterations
-        with torch.autograd.profiler.profile(args.enable_profiling, args.use_gpu) as prof:
+        with torch.autograd.profiler.profile(enabled=args.enable_profiling, use_cuda=args.use_gpu) as prof:
             start_time = time_wrap(args.use_gpu)
             for _ in range(args.num_iters):
                 op(*op_args)
