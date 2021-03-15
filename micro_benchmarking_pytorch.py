@@ -21,81 +21,94 @@ def weight_init(m):
     elif isinstance(m, nn.BatchNorm2d):
         m.weight.data.fill_(1)
         m.bias.data.zero_()
-#'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'shufflenetv2'
+
+# num_classes=1000
+models = {
+        "alexnet" :            torchvision.models.alexnet,
+        "densenet121" :        torchvision.models.densenet121,
+        "densenet161" :        torchvision.models.densenet161,
+        "densenet169" :        torchvision.models.densenet169,
+        "densenet201" :        torchvision.models.densenet201,
+        "googlenet" :          torchvision.models.googlenet,
+        "inception_v3" :       torchvision.models.inception_v3,
+        "mnasnet0_5" :         torchvision.models.mnasnet0_5,
+        "mnasnet0_75" :        torchvision.models.mnasnet0_75,
+        "mnasnet1_0" :         torchvision.models.mnasnet1_0,
+        "mnasnet1_3" :         torchvision.models.mnasnet1_3,
+        "mobilenet_v2" :       torchvision.models.mobilenet_v2,
+        "resnet18" :           torchvision.models.resnet18,
+        "resnet34" :           torchvision.models.resnet34,
+        "resnet50" :           torchvision.models.resnet50,
+        "resnet101" :          torchvision.models.resnet101,
+        "resnet152" :          torchvision.models.resnet152,
+        "resnext50" :          torchvision.models.resnext50_32x4d,
+        "resnext50_32x4d" :    torchvision.models.resnext50_32x4d,
+        "resnext101" :         torchvision.models.resnext101_32x8d,
+        "resnext101_32x8d" :   torchvision.models.resnext101_32x8d,
+        "shufflenet" :         shufflenet,
+        "shufflenet_v2" :      shufflenet_v2,
+        "shufflenet_v2_x05" :  torchvision.models.shufflenet_v2_x0_5,
+        "shufflenet_v2_x10" :  torchvision.models.shufflenet_v2_x1_0,
+        "shufflenet_v2_x15" :  torchvision.models.shufflenet_v2_x1_5,
+        "shufflenet_v2_x20" :  torchvision.models.shufflenet_v2_x2_0,
+        "shufflenet_v2_x0_5" : torchvision.models.shufflenet_v2_x0_5,
+        "shufflenet_v2_x1_0" : torchvision.models.shufflenet_v2_x1_0,
+        "shufflenet_v2_x1_5" : torchvision.models.shufflenet_v2_x1_5,
+        "shufflenet_v2_x2_0" : torchvision.models.shufflenet_v2_x2_0,
+        "SqueezeNet" :         torchvision.models.squeezenet1_0,
+        "squeezenet1_0" :      torchvision.models.squeezenet1_0,
+        "SqueezeNet1.1" :      torchvision.models.squeezenet1_1,
+        "squeezenet1_1" :      torchvision.models.squeezenet1_1,
+        "vgg11" :              torchvision.models.vgg11,
+        "vgg13" :              torchvision.models.vgg13,
+        "vgg16" :              torchvision.models.vgg16,
+        "vgg19" :              torchvision.models.vgg19,
+        "vgg11_bn" :           torchvision.models.vgg11_bn,
+        "vgg13_bn" :           torchvision.models.vgg13_bn,
+        "vgg16_bn" :           torchvision.models.vgg16_bn,
+        "vgg19_bn" :           torchvision.models.vgg19_bn,
+        "wide_resnet50_2" :    torchvision.models.wide_resnet50_2,
+        "wide_resnet101_2" :   torchvision.models.wide_resnet101_2,
+}
+
+# newer torchvision models, for backwards compat
+try:
+    models["mobilenet_v3_large"] = torchvision.models.mobilenet_v3_large
+    models["mobilenet_v3_small"] = torchvision.models.mobilenet_v3_small
+except AttributeError:
+    pass
+
+# segmentation models, num_classes=21
+segmentation_models = {
+        "fcn_resnet50" :        torchvision.models.segmentation.fcn_resnet50,
+        "fcn_resnet101" :       torchvision.models.segmentation.fcn_resnet101,
+        "deeplabv3_resnet50" :  torchvision.models.segmentation.deeplabv3_resnet50,
+        "deeplabv3_resnet101" : torchvision.models.segmentation.deeplabv3_resnet101,
+}
+
+# newer torchvision segmentation models, for backwards compat
+try:
+    segmentation_models["deeplabv3_mobilenet_v3_large"] = torchvision.models.segmentation.deeplabv3_mobilenet_v3_large
+    segmentation_models["lraspp_mobilenet_v3_large"] = torchvision.models.segmentation.lraspp_mobilenet_v3_large,
+except AttributeError:
+    pass
+
+def sanitize_net_name(net):
+    return net.lower().replace(".", "_")
+
+def get_network_names():
+    return sorted(list(models.keys()) + list(segmentation_models.keys()))
+
 def get_network(net):
-    if (net == "alexnet"):
-        return torchvision.models.alexnet().to(device="cuda")
-    elif (net == "densenet121"):
-        return torchvision.models.densenet121().to(device="cuda")
-    elif (net == "densenet161"):
-        return torchvision.models.densenet161().to(device="cuda")
-    elif (net == "densenet169"):
-        return torchvision.models.densenet169().to(device="cuda")
-    elif (net == "densenet201"):
-        return torchvision.models.densenet201().to(device="cuda")
-    elif (net == "googlenet"):
-        return torchvision.models.googlenet().to(device="cuda")
-    elif (net == "inception"):
-        return torchvision.models.inception(aux_logits=False).to(device="cuda")
-    elif (net == "inception_v3"):
-        return torchvision.models.inception_v3(aux_logits=False).to(device="cuda")
-    elif (net == "mobilenet_v2"):
-        return torchvision.models.mobilenet_v2().to(device="cuda")
-    elif (net == "resnet18"):
-        return torchvision.models.resnet18().to(device="cuda")
-    elif (net == "resnet34"):
-        return torchvision.models.resnet34().to(device="cuda")
-    elif (net == "resnet50"):
-        return torchvision.models.resnet50().to(device="cuda")
-    elif (net == "resnet101"):
-        return torchvision.models.resnet101().to(device="cuda")
-    elif (net == "resnet152"):
-        return torchvision.models.resnet152().to(device="cuda")
-    elif (net == "resnext50"):
-        return torchvision.models.resnext50_32x4d().to(device="cuda")
-    elif (net == "resnext101"):
-        return torchvision.models.resnext101_32x8d().to(device="cuda")
-    elif (net == "shufflenet"):
-        model = shufflenet().to(device="cuda")
-        model.apply(weight_init)
-        return model
-    elif (net == "shufflenet_v2_x05"):
-        return torchvision.models.shufflenet_v2_x0_5().to(device="cuda")
-    elif (net == "shufflenet_v2_x10"):
-        return torchvision.models.shufflenet_v2_x1_0().to(device="cuda")
-    elif (net == "shufflenet_v2_x15"):
-        return torchvision.models.shufflenet_v2_x1_5().to(device="cuda")
-    elif (net == "SqueezeNet"):
-        return torchvision.models.squeezenet1_0().to(device="cuda")
-    elif (net == "SqueezeNet1.1"):
-        return torchvision.models.squeezenet1_1().to(device="cuda")
-    elif (net == "vgg11"):
-        return torchvision.models.vgg11().to(device="cuda")
-    elif (net == "vgg13"):
-        return torchvision.models.vgg13().to(device="cuda")
-    elif (net == "vgg16"):
-        return torchvision.models.vgg16().to(device="cuda")
-    elif (net == "vgg19"):
-        return torchvision.models.vgg19().to(device="cuda")
-    elif (net == "vgg11_bn"):
-        return torchvision.models.vgg11_bn().to(device="cuda")
-    elif (net == "vgg13_bn"):
-        return torchvision.models.vgg13_bn().to(device="cuda")
-    elif (net == "vgg16_bn"):
-        return torchvision.models.vgg16_bn().to(device="cuda")
-    elif (net == "vgg19_bn"):
-        return torchvision.models.vgg19_bn().to(device="cuda")
-    # segmentation models
-    elif (net == "deeplabv3_resnet50"):
-        return torchvision.models.segmentation.deeplabv3_resnet50().to(device="cuda")
-    elif (net == "deeplabv3_resnet101"):
-        return torchvision.models.segmentation.deeplabv3_resnet101().to(device="cuda")
-    elif (net == "fcn_resnet50"):
-        return torchvision.models.segmentation.deeplabv3_resnet50().to(device="cuda")
-    elif (net == "fcn_resnet101"):
-        return torchvision.models.segmentation.deeplabv3_resnet101().to(device="cuda")
+    # aux_logits=False only used by inception_v3
+    if "inception_v3" == net:
+        return models[net](aux_logits=False).to(device="cuda")
+    elif net in models:
+        return models[net]().to(device="cuda")
+    elif net in segmentation_models:
+        return segmentation_models[net]().to(device="cuda")
     else:
-        print ("ERROR: not a supported model.")
+        print ("ERROR: not a supported model '%s'" % net)
         sys.exit(1)
 
 def forwardbackward(inp, optimizer, network, target):
@@ -132,7 +145,11 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, run_fp16, d
     else:
         torch.cuda.set_device("cuda:0")
 
+    net = sanitize_net_name(net)
     network = get_network(net)
+    if "shufflenet" == net:
+        model.apply(weight_init)
+
     if (run_fp16):
         network = network_to_half(network)
 
@@ -154,8 +171,12 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, run_fp16, d
         inp = torch.randn(batch_size, 3, 224, 224, device="cuda")
     if (run_fp16):
         inp = inp.half()
-    # number of classes is 1000 for imagenet
-    target = torch.randint(0, 1000, (batch_size,), device="cuda")
+    if net in models:
+        # number of classes is 1000 for imagenet
+        target = torch.randint(0, 1000, (batch_size,), device="cuda")
+    elif net in segmentation_models:
+        # number of classes is 21 for segmentation
+        target = torch.randint(0, 21, (batch_size,), device="cuda")
     param_copy = network.parameters()
     if (run_fp16):
         param_copy = get_param_copy(network)
@@ -234,9 +255,7 @@ def main():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--network", type=str,
-        choices=['alexnet', 'vgg11', 'vgg13', 'vgg16', 'vgg19', 'vgg11_bn', 'vgg13_bn', 'vgg16_bn', 'vgg19_bn', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152', 'shufflenet', 'shufflenet_v2_x05', 'shufflenet_v2_x10', 'shufflenet_v2_x15', 'SqueezeNet', 'SqueezeNet1.1', 'densenet121', 'densenet169', 'densenet201', 'densenet161', 'inception', 'inception_v3', 'resnext50', 'resnext101', 'mobilenet_v2', 'googlenet' , 'deeplabv3_resnet50', 'deeplabv3_resnet101', 'fcn_resnet50', 'fcn_resnet101' ],
-        required=True, help="Network to run.")
+    parser.add_argument("--network", type=str, choices=get_network_names(), required=True, help="Network to run.")
     parser.add_argument("--batch-size" , type=int, required=False, default=64, help="Batch size (will be split among devices used by this invocation)")
     parser.add_argument("--iterations", type=int, required=False, default=20, help="Iterations")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
