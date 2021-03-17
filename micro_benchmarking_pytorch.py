@@ -93,9 +93,6 @@ try:
 except AttributeError:
     pass
 
-def sanitize_net_name(net):
-    return net.lower().replace(".", "_")
-
 def get_network_names():
     return sorted(list(models.keys()) + list(segmentation_models.keys()))
 
@@ -145,7 +142,6 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, run_fp16, d
     else:
         torch.cuda.set_device("cuda:0")
 
-    net = sanitize_net_name(net)
     network = get_network(net)
     if "shufflenet" == net:
         model.apply(weight_init)
