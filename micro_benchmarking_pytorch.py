@@ -113,16 +113,29 @@ def get_network(net):
         print ("ERROR: not a supported model '%s'" % net)
         sys.exit(1)
 
-def forwardbackward(inp, optimizer, network, target, amp_opt_level):
+def forwardbackward(inp, optimizer, network, target, amp_opt_level, prof_step=0):
     optimizer.zero_grad()
+    if prof_step:
+        prof = FlopsProfiler(network)
+        prof.start_profile()
     out = network(inp)
     # WIP: googlenet, deeplabv3_*, fcn_* missing log_softmax for this to work
     loss = torch.nn.functional.cross_entropy(out, target)
+    # End profiler here if only to profile forward pass
+
     if amp_opt_level:
         with apex.amp.scale_loss(loss, optimizer) as scaled_loss:
             scaled_loss.backward()
     else:
         loss.backward()
+
+    if prof_step:
+        # End profiler here to profile both fwd and bwd passes
+        # flops = prof.get_total_flops(as_string=True)
+        # params = prof.get_total_params(as_string=True)
+        prof.print_model_profile(profile_step=prof_step)
+        prof.end_profile()
+
     optimizer.step()
 
 def rendezvous(distributed_parameters):
@@ -130,7 +143,7 @@ def rendezvous(distributed_parameters):
     torch.distributed.init_process_group(backend=distributed_parameters['dist_backend'], init_method=distributed_parameters['dist_url'], rank=distributed_parameters['rank'], world_size=distributed_parameters['world_size'])
     print("Rendezvous complete. Created process group...")
 
-def run_benchmarking_wrapper(net, batch_size, iterations, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
+def run_benchmarking_wrapper(net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
     if (dataparallel or distributed_dataparallel):
         ngpus = len(device_ids) if device_ids else torch.cuda.device_count()
     else:
@@ -140,11 +153,11 @@ def run_benchmarking_wrapper(net, batch_size, iterations, amp_opt_level, run_fp1
         # Assumption below that each process launched with --distributed_dataparallel has the same number of devices visible/specified
         distributed_parameters['world_size'] = ngpus * distributed_parameters['world_size']
         distributed_parameters['rank'] = ngpus * distributed_parameters['rank']
-        mp.spawn(run_benchmarking, nprocs=ngpus, args=(ngpus, net, batch_size, iterations, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters))
+        mp.spawn(run_benchmarking, nprocs=ngpus, args=(ngpus, net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters))
     else:
-        run_benchmarking(0, ngpus, net, batch_size, iterations, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None)
+        run_benchmarking(0, ngpus, net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None)
 
-def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
+def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
     if device_ids:
         assert ngpus == len(device_ids)
         torch.cuda.set_device("cuda:%d" % device_ids[local_rank])
@@ -202,7 +215,10 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, amp_opt_lev
     print ("INFO: running the benchmark..")
     tm = time.time()
     for i in range(iterations):
-        forwardbackward(inp, optimizer, network, target, amp_opt_level)
+        if i == prof_step:
+            forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
+        else:
+            forwardbackward(inp, optimizer, network, target, amp_opt_level)
     torch.cuda.synchronize()
 
     tm2 = time.time()
@@ -249,6 +265,8 @@ def main():
     net = args.network
     batch_size = args.batch_size
     iterations = args.iterations
+    prof_step = args.flops_prof_step
+    prof_step = max(0, min(prof_step, iterations - 1))
     run_fp16 = args.fp16
     amp_opt_level = args.amp_opt_level
     dataparallel = args.dataparallel
@@ -270,13 +288,14 @@ def main():
                args.dist_backend is not None and \
                args.dist_url is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
 
-    run_benchmarking_wrapper(net, batch_size, iterations, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters)
+    run_benchmarking_wrapper(net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--network", type=str, choices=get_network_names(), required=True, help="Network to run.")
     parser.add_argument("--batch-size" , type=int, required=False, default=64, help="Batch size (will be split among devices used by this invocation)")
     parser.add_argument("--iterations", type=int, required=False, default=20, help="Iterations")
+    parser.add_argument("--flops-prof-step", type=int, required=False, default=0, help="The flops profiling step")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
     parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
     parser.add_argument("--dataparallel", action='store_true', required=False, help="Use torch.nn.DataParallel api to run single process on multiple devices. Use only one of --dataparallel or --distributed_dataparallel")
@@ -288,6 +307,13 @@ if __name__ == '__main__':
     parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
 
     args = parser.parse_args()
+
+    if args.flops_prof_step:
+        try:
+            from deepspeed.profiling.flops_profiler import FlopsProfiler
+        except:
+            print("ERROR: You must install (or copy) deepspeed.profiling to use --flops-prof-step")
+            sys.exit(1)
 
     if args.fp16 and args.amp_opt_level:
         print ("ERROR: Cannot use both --fp16 and --amp-opt-level")
