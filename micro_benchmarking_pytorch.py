@@ -11,6 +11,7 @@ import torch.multiprocessing as mp
 from fp16util import network_to_half, get_param_copy
 from shufflenet import shufflenet
 from shufflenet_v2 import shufflenet as shufflenet_v2
+from xception import xception
 try:
     import apex
     HAVE_APEX = True
@@ -74,6 +75,7 @@ models = {
         "vgg19_bn" :           torchvision.models.vgg19_bn,
         "wide_resnet50_2" :    torchvision.models.wide_resnet50_2,
         "wide_resnet101_2" :   torchvision.models.wide_resnet101_2,
+        "xception" :           xception,
 }
 
 # newer torchvision models, for backwards compat
