@@ -215,13 +215,38 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, prof_step, 
 
     ## benchmark.
     print ("INFO: running the benchmark..")
-    tm = time.time()
-    for i in range(iterations):
-        if i == prof_step:
-            forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
-        else:
-            forwardbackward(inp, optimizer, network, target, amp_opt_level)
-    torch.cuda.synchronize()
+    if args.kineto:
+        from torch.profiler import schedule, profile, ProfilerActivity, record_function
+        profiler_schedule = schedule(
+            skip_first = 0,
+            wait = 1,
+            warmup = 2,
+            active = 2,
+            repeat = 1,
+        )
+
+        def trace_ready_callback(prof):
+            print("----------- Trace Ready -----------")
+            prof.export_chrome_trace(f"trace{prof.step_num}.json")
+
+        tm = time.time()
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=profiler_schedule,
+            on_trace_ready=trace_ready_callback) as prof:
+            for i in range(iterations):
+                with record_function(f"iteration {i}"):
+                    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+                prof.step()
+            torch.cuda.synchronize()
+            print(prof.key_averages().table(sort_by="cuda_time_total"))
+    else:
+        tm = time.time()
+        for i in range(iterations):
+            if i == prof_step:
+                forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
+            else:
+                forwardbackward(inp, optimizer, network, target, amp_opt_level)
 
     tm2 = time.time()
     time_per_batch = (tm2 - tm) / iterations
@@ -298,6 +323,7 @@ if __name__ == '__main__':
     parser.add_argument("--batch-size" , type=int, required=False, default=64, help="Batch size (will be split among devices used by this invocation)")
     parser.add_argument("--iterations", type=int, required=False, default=20, help="Iterations")
     parser.add_argument("--flops-prof-step", type=int, required=False, default=0, help="The flops profiling step")
+    parser.add_argument("--kineto", action='store_true', required=False, help="Turn kineto profiling on")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
     parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
     parser.add_argument("--dataparallel", action='store_true', required=False, help="Use torch.nn.DataParallel api to run single process on multiple devices. Use only one of --dataparallel or --distributed_dataparallel")
