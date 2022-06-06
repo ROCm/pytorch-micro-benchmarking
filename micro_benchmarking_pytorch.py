@@ -242,11 +242,12 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
             print(prof.key_averages().table(sort_by="cuda_time_total"))
     else:
         tm = time.time()
-        for i in range(iterations):
-            if i == prof_step:
-                forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
-            else:
-                forwardbackward(inp, optimizer, network, target, amp_opt_level)
+        with torch.autograd.profiler.emit_nvtx(enabled=args.autograd_profiler):
+            for i in range(iterations):
+                if i == flops_prof_step:
+                    forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
+                else:
+                    forwardbackward(inp, optimizer, network, target, amp_opt_level)
 
     tm2 = time.time()
     time_per_batch = (tm2 - tm) / iterations
@@ -324,6 +325,7 @@ if __name__ == '__main__':
     parser.add_argument("--iterations", type=int, required=False, default=20, help="Iterations")
     parser.add_argument("--flops-prof-step", type=int, required=False, default=0, help="The flops profiling step")
     parser.add_argument("--kineto", action='store_true', required=False, help="Turn kineto profiling on")
+    parser.add_argument("--autograd_profiler", action='store_true', required=False, help="Use PyTorch autograd (old) profiler")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
     parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
     parser.add_argument("--dataparallel", action='store_true', required=False, help="Use torch.nn.DataParallel api to run single process on multiple devices. Use only one of --dataparallel or --distributed_dataparallel")
