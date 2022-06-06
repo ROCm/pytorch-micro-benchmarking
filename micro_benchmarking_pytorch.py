@@ -115,9 +115,9 @@ def get_network(net):
         print ("ERROR: not a supported model '%s'" % net)
         sys.exit(1)
 
-def forwardbackward(inp, optimizer, network, target, amp_opt_level, prof_step=0):
+def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_step=0):
     optimizer.zero_grad()
-    if prof_step:
+    if flops_prof_step:
         prof = FlopsProfiler(network)
         prof.start_profile()
     out = network(inp)
@@ -131,11 +131,11 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, prof_step=0)
     else:
         loss.backward()
 
-    if prof_step:
+    if flops_prof_step:
         # End profiler here to profile both fwd and bwd passes
         # flops = prof.get_total_flops(as_string=True)
         # params = prof.get_total_params(as_string=True)
-        prof.print_model_profile(profile_step=prof_step)
+        prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
 
     optimizer.step()
@@ -145,7 +145,7 @@ def rendezvous(distributed_parameters):
     torch.distributed.init_process_group(backend=distributed_parameters['dist_backend'], init_method=distributed_parameters['dist_url'], rank=distributed_parameters['rank'], world_size=distributed_parameters['world_size'])
     print("Rendezvous complete. Created process group...")
 
-def run_benchmarking_wrapper(net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
+def run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
     if (dataparallel or distributed_dataparallel):
         ngpus = len(device_ids) if device_ids else torch.cuda.device_count()
     else:
@@ -155,11 +155,11 @@ def run_benchmarking_wrapper(net, batch_size, iterations, prof_step, amp_opt_lev
         # Assumption below that each process launched with --distributed_dataparallel has the same number of devices visible/specified
         distributed_parameters['world_size'] = ngpus * distributed_parameters['world_size']
         distributed_parameters['rank'] = ngpus * distributed_parameters['rank']
-        mp.spawn(run_benchmarking, nprocs=ngpus, args=(ngpus, net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters))
+        mp.spawn(run_benchmarking, nprocs=ngpus, args=(ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters))
     else:
-        run_benchmarking(0, ngpus, net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None)
+        run_benchmarking(0, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None)
 
-def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
+def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
     if device_ids:
         assert ngpus == len(device_ids)
         torch.cuda.set_device("cuda:%d" % device_ids[local_rank])
@@ -292,8 +292,8 @@ def main():
     net = args.network
     batch_size = args.batch_size
     iterations = args.iterations
-    prof_step = args.flops_prof_step
-    prof_step = max(0, min(prof_step, iterations - 1))
+    flops_prof_step = args.flops_prof_step
+    flops_prof_step = max(0, min(flops_prof_step, iterations - 1))
     run_fp16 = args.fp16
     amp_opt_level = args.amp_opt_level
     dataparallel = args.dataparallel
@@ -315,7 +315,7 @@ def main():
                args.dist_backend is not None and \
                args.dist_url is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
 
-    run_benchmarking_wrapper(net, batch_size, iterations, prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters)
+    run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
