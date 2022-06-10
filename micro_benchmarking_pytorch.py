@@ -248,6 +248,7 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
                     forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
                 else:
                     forwardbackward(inp, optimizer, network, target, amp_opt_level)
+        torch.cuda.synchronize()
 
     tm2 = time.time()
     time_per_batch = (tm2 - tm) / iterations
