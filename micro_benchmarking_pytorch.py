@@ -145,7 +145,7 @@ def rendezvous(distributed_parameters):
     torch.distributed.init_process_group(backend=distributed_parameters['dist_backend'], init_method=distributed_parameters['dist_url'], rank=distributed_parameters['rank'], world_size=distributed_parameters['world_size'])
     print("Rendezvous complete. Created process group...")
 
-def run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
+def run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, arg=None):
     if (dataparallel or distributed_dataparallel):
         ngpus = len(device_ids) if device_ids else torch.cuda.device_count()
     else:
@@ -155,11 +155,11 @@ def run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_o
         # Assumption below that each process launched with --distributed_dataparallel has the same number of devices visible/specified
         distributed_parameters['world_size'] = ngpus * distributed_parameters['world_size']
         distributed_parameters['rank'] = ngpus * distributed_parameters['rank']
-        mp.spawn(run_benchmarking, nprocs=ngpus, args=(ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters))
+        mp.spawn(run_benchmarking, nprocs=ngpus, args=(ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters, args))
     else:
-        run_benchmarking(0, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None)
+        run_benchmarking(0, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, args=args)
 
-def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
+def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, args=None):
     if device_ids:
         assert ngpus == len(device_ids)
         torch.cuda.set_device("cuda:%d" % device_ids[local_rank])
@@ -317,7 +317,7 @@ def main():
                args.dist_backend is not None and \
                args.dist_url is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
 
-    run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters)
+    run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters, args)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
