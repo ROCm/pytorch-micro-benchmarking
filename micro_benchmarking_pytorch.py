@@ -12,6 +12,7 @@ from fp16util import network_to_half, get_param_copy
 from shufflenet import shufflenet
 from shufflenet_v2 import shufflenet as shufflenet_v2
 from xception import xception
+import horovod.torch as hvd
 try:
     import apex
     HAVE_APEX = True
@@ -125,11 +126,23 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
     loss = torch.nn.functional.cross_entropy(out, target)
     # End profiler here if only to profile forward pass
 
+    #print('loss: ', loss, flush=True)
+    if hvd.is_initialized():
+        reduced_loss = hvd.allreduce(loss.data, name='train_loss')
+    elif torch.distributed.is_initialized():
+        rt = loss.data.clone()
+        torch.distributed.all_reduce(rt, op=torch.distributed.ReduceOp.SUM)
+        rt /= torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        reduced_loss = rt
+    else:
+        reduced_loss = loss.data
     if amp_opt_level:
         with apex.amp.scale_loss(loss, optimizer) as scaled_loss:
             scaled_loss.backward()
     else:
         loss.backward()
+    if hvd.is_initialized():
+        optimizer.synchronize()
 
     if flops_prof_step:
         # End profiler here to profile both fwd and bwd passes
@@ -137,32 +150,36 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
         # params = prof.get_total_params(as_string=True)
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
-
-    optimizer.step()
-
+    if hvd.is_initialized():
+        with optimizer.skip_synchronize():
+            optimizer.step()
+    else:
+        optimizer.step()
+    return reduced_loss
 def rendezvous(distributed_parameters):
     print("Initializing process group...")
-    torch.distributed.init_process_group(backend=distributed_parameters['dist_backend'], init_method=distributed_parameters['dist_url'], rank=distributed_parameters['rank'], world_size=distributed_parameters['world_size'])
+    torch.distributed.init_process_group(backend=distributed_parameters['dist_backend'], init_method=distributed_parameters['dist_url'])#, rank=distributed_parameters['rank'], world_size=distributed_parameters['world_size'])
     print("Rendezvous complete. Created process group...")
 
 def run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, arg=None):
     if (dataparallel or distributed_dataparallel):
         ngpus = len(device_ids) if device_ids else torch.cuda.device_count()
+        device_ids = device_ids if device_ids else [i for i in range(ngpus)]
     else:
         ngpus = 1
 
     if (distributed_dataparallel):
         # Assumption below that each process launched with --distributed_dataparallel has the same number of devices visible/specified
-        distributed_parameters['world_size'] = ngpus * distributed_parameters['world_size']
-        distributed_parameters['rank'] = ngpus * distributed_parameters['rank']
-        mp.spawn(run_benchmarking, nprocs=ngpus, args=(ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters, args))
+        distributed_parameters['world_size'] = distributed_parameters['world_size']
+        distributed_parameters['rank'] = distributed_parameters['rank']
+        run_benchmarking(args.rank, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids, distributed_parameters, args)
     else:
         run_benchmarking(0, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, args=args)
 
 def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, args=None):
     if device_ids:
         assert ngpus == len(device_ids)
-        torch.cuda.set_device("cuda:%d" % device_ids[local_rank])
+        torch.cuda.set_device("cuda:%d" % device_ids[local_rank % ngpus])
     else:
         torch.cuda.set_device("cuda:0")
 
@@ -173,17 +190,18 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
     if (run_fp16):
         network = network_to_half(network)
 
-    if (dataparallel):
-        devices_to_run_on = device_ids if device_ids else list(range(ngpus))
-        print ("INFO: Running dataparallel on devices: {}".format(str(devices_to_run_on)))
-        network = torch.nn.DataParallel(network, device_ids=devices_to_run_on)
-    elif (distributed_dataparallel):
-        distributed_parameters['rank'] += local_rank
-        rendezvous(distributed_parameters)
-        devices_to_run_on = [(device_ids[local_rank] if device_ids else local_rank)]
-        print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
-        network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
-        batch_size = int(batch_size / ngpus)
+    if not hvd.is_initialized():
+        if (dataparallel):
+            devices_to_run_on = device_ids if device_ids else list(range(ngpus))
+            print ("INFO: Running dataparallel on devices: {}".format(str(devices_to_run_on)))
+            network = torch.nn.DataParallel(network, device_ids=devices_to_run_on)
+            batch_size = batch_size * ngpus
+        elif (distributed_dataparallel):
+            rendezvous(distributed_parameters)
+            devices_to_run_on = [(device_ids[local_rank % ngpus] if device_ids else local_rank)]
+            print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
+            network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
+            batch_size = batch_size
 
     if (net == "inception_v3"):
         inp = torch.randn(batch_size, 3, 299, 299, device="cuda")
@@ -202,6 +220,10 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
         param_copy = get_param_copy(network)
     optimizer = torch.optim.SGD(param_copy, lr = 0.01, momentum = 0.9)
 
+    if hvd.is_initialized():
+        optimizer = hvd.DistributedOptimizer(optimizer)#, named_parameters=network.named_parameters())
+        hvd.broadcast_parameters(network.state_dict(), root_rank=0)
+        hvd.broadcast_optimizer_state(optimizer, root_rank=0)
     if (amp_opt_level):
         network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
 
@@ -236,7 +258,7 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
             on_trace_ready=trace_ready_callback) as prof:
             for i in range(iterations):
                 with record_function(f"iteration {i}"):
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+                    loss = forwardbackward(inp, optimizer, network, target, amp_opt_level)
                 prof.step()
             torch.cuda.synchronize()
             print(prof.key_averages().table(sort_by="cuda_time_total"))
@@ -245,9 +267,9 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
         with torch.autograd.profiler.emit_nvtx(enabled=args.autograd_profiler):
             for i in range(iterations):
                 if i == flops_prof_step:
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
+                    loss = forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
                 else:
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+                    loss = forwardbackward(inp, optimizer, network, target, amp_opt_level)
         torch.cuda.synchronize()
 
     tm2 = time.time()
@@ -291,7 +313,7 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
       print ("Throughput [img/sec] : {}".format(batch_size*world_size/time_per_batch))
 
 def main():
-    net = args.network
+    net = args.model
     batch_size = args.batch_size
     iterations = args.iterations
     flops_prof_step = args.flops_prof_step
@@ -305,6 +327,14 @@ def main():
         device_ids = [int(x) for x in device_ids_str.split(",")]
     else:
         device_ids = None
+    if args.horovod:
+        hvd.init()
+        args.rank = hvd.local_rank()
+        args.world_size = hvd.size()
+    else:
+        args.rank = int(os.environ['LOCAL_RANK'])
+        args.world_size = int(os.environ['WORLD_SIZE'])
+
     distributed_parameters = {}
     distributed_parameters['rank'] = args.rank
     distributed_parameters['world_size'] = args.world_size
@@ -321,21 +351,22 @@ def main():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--network", type=str, choices=get_network_names(), required=True, help="Network to run.")
+    parser.add_argument("--model", type=str, choices=get_network_names(), required=True, help="Network to run.")
     parser.add_argument("--batch-size" , type=int, required=False, default=64, help="Batch size (will be split among devices used by this invocation)")
     parser.add_argument("--iterations", type=int, required=False, default=20, help="Iterations")
     parser.add_argument("--flops-prof-step", type=int, required=False, default=0, help="The flops profiling step")
     parser.add_argument("--kineto", action='store_true', required=False, help="Turn kineto profiling on")
     parser.add_argument("--autograd_profiler", action='store_true', required=False, help="Use PyTorch autograd (old) profiler")
-    parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
+    parser.add_argument("--fp16", action='store_true', required=False,help="FP16 mixed precision benchmarking")
     parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
     parser.add_argument("--dataparallel", action='store_true', required=False, help="Use torch.nn.DataParallel api to run single process on multiple devices. Use only one of --dataparallel or --distributed_dataparallel")
+    parser.add_argument("--horovod", action='store_true', required=False, help="Use horovod for distributed work")
     parser.add_argument("--distributed_dataparallel", action='store_true', required=False, help="Use torch.nn.parallel.DistributedDataParallel api to run on multiple processes/nodes. The multiple processes need to be launched manually, this script will only launch ONE process per invocation. Use only one of --dataparallel or --distributed_dataparallel")
     parser.add_argument("--device_ids", type=str, required=False, default=None, help="Comma-separated list (no spaces) to specify which HIP devices (0-indexed) to run dataparallel or distributedDataParallel api on. Might need to use HIP_VISIBLE_DEVICES to limit visiblity of devices to different processes.")
     parser.add_argument("--rank", type=int, required=False, default=None, help="Rank of this process. Required for --distributed_dataparallel")
     parser.add_argument("--world-size", type=int, required=False, default=None, help="Total number of ranks/processes. Required for --distributed_dataparallel")
     parser.add_argument("--dist-backend", type=str, required=False, default=None, help="Backend used for distributed training. Can be one of 'nccl' or 'gloo'. Required for --distributed_dataparallel")
-    parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
+    parser.add_argument("--dist-url", type=str, required=False, default='env://', help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
 
     args = parser.parse_args()
 
