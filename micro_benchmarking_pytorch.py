@@ -168,10 +168,18 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
 
     network = get_network(net)
     if "shufflenet" == net:
-        model.apply(weight_init)
+        network.apply(weight_init)
 
     if (run_fp16):
         network = network_to_half(network)
+        
+    param_copy = network.parameters()
+    if (run_fp16):
+        param_copy = get_param_copy(network)
+    optimizer = torch.optim.SGD(param_copy, lr = 0.01, momentum = 0.9)
+
+    if (amp_opt_level):
+        network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
 
     if (dataparallel):
         devices_to_run_on = device_ids if device_ids else list(range(ngpus))
@@ -197,13 +205,6 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
     elif net in segmentation_models:
         # number of classes is 21 for segmentation
         target = torch.randint(0, 21, (batch_size,), device="cuda")
-    param_copy = network.parameters()
-    if (run_fp16):
-        param_copy = get_param_copy(network)
-    optimizer = torch.optim.SGD(param_copy, lr = 0.01, momentum = 0.9)
-
-    if (amp_opt_level):
-        network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
 
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
