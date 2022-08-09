@@ -14,7 +14,7 @@ function run_pyt_cnn() {
     model=$1
     gpus_per_node=$2
     batch_per_gpu=$3
-    use_fp16=$4
+    use_amp=$4
     use_horovod=$5
     tag=$6
     LOG=${outdir}/run_${model}_gbs$((gpus_per_node*batch_per_gpu))_${gpus_per_node}GPUs_${tag}
@@ -27,26 +27,27 @@ function run_pyt_cnn() {
     else
         cmd="python3 -u -m multiproc --nproc_per_node ${gpus_per_node} --nnodes 1 ${cmd}"
     fi
-    if [[ ${use_fp16} == "true" ]]; then
-        cmd+=" --fp16"
-        LOG+="_fp16"
+    if [[ ${use_amp} == "true" ]]; then
+        cmd+=" --amp-opt-level 1"
+        LOG+="_amp"
     fi
     LOG+="_${DATE}.log"
     echo ${cmd} | tee ${LOG}
     ${cmd} 2>&1 | tee -a ${LOG}
 }
 
-for bs in `echo 512 1024 2048 4096`; do
-    for gpus_per_node in `echo 8 4 2 1`; do
+for bs_per_gpu in `echo 128 256 512`; do
+    for gpus_per_node in `echo 8 2`; do
         for i in `seq 1 ${iter}`; do
-            bs_per_gpu=$((bs/gpus_per_node))
-            if [[ ${bs_per_gpu} -gt 512 ]]; then
-                continue
-            fi
-            run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} false false ${tag}
-            run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} false true ${tag}
             run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} true false ${tag}
-            run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} true true ${tag}
+        done
+    done
+done
+
+for bs_per_gpu in `echo 128 256`; do
+    for gpus_per_node in `echo 8 2`; do
+        for i in `seq 1 ${iter}`; do
+            run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} false false ${tag}
         done
     done
 done

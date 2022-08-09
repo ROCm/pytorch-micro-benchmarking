@@ -126,6 +126,7 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
     loss = torch.nn.functional.cross_entropy(out, target)
     # End profiler here if only to profile forward pass
 
+
     #print('loss: ', loss, flush=True)
     if hvd.is_initialized():
         reduced_loss = hvd.allreduce(loss.data, name='train_loss')
@@ -177,6 +178,8 @@ def run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_o
         run_benchmarking(0, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, args=args)
 
 def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, args=None):
+    if not hvd.is_initialized() and distributed_dataparallel:
+        rendezvous(distributed_parameters)
     if device_ids:
         assert ngpus == len(device_ids)
         torch.cuda.set_device("cuda:%d" % device_ids[local_rank % ngpus])
@@ -189,19 +192,6 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
 
     if (run_fp16):
         network = network_to_half(network)
-
-    if not hvd.is_initialized():
-        if (dataparallel):
-            devices_to_run_on = device_ids if device_ids else list(range(ngpus))
-            print ("INFO: Running dataparallel on devices: {}".format(str(devices_to_run_on)))
-            network = torch.nn.DataParallel(network, device_ids=devices_to_run_on)
-            batch_size = batch_size * ngpus
-        elif (distributed_dataparallel):
-            rendezvous(distributed_parameters)
-            devices_to_run_on = [(device_ids[local_rank % ngpus] if device_ids else local_rank)]
-            print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
-            network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
-            batch_size = batch_size
 
     if (net == "inception_v3"):
         inp = torch.randn(batch_size, 3, 299, 299, device="cuda")
@@ -226,6 +216,18 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
         hvd.broadcast_optimizer_state(optimizer, root_rank=0)
     if (amp_opt_level):
         network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
+
+    if not hvd.is_initialized():
+        if (dataparallel):
+            devices_to_run_on = device_ids if device_ids else list(range(ngpus))
+            print ("INFO: Running dataparallel on devices: {}".format(str(devices_to_run_on)))
+            network = torch.nn.DataParallel(network, device_ids=devices_to_run_on)
+            batch_size = batch_size * ngpus
+        elif (distributed_dataparallel):
+            devices_to_run_on = [(device_ids[local_rank % ngpus] if device_ids else local_rank)]
+            print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
+            network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on, find_unused_parameters=True, broadcast_buffers=False, bucket_cap_mb=10)
+            batch_size = batch_size
 
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
