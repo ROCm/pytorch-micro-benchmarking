@@ -12,6 +12,7 @@ from fp16util import network_to_half, get_param_copy
 from shufflenet import shufflenet
 from shufflenet_v2 import shufflenet as shufflenet_v2
 from xception import xception
+import gbn_resnet as gbn_models
 import horovod.torch as hvd
 try:
     import apex
@@ -104,11 +105,15 @@ except AttributeError:
 def get_network_names():
     return sorted(list(models.keys()) + list(segmentation_models.keys()))
 
-def get_network(net):
+def get_network(net, nhwc=False):
     # aux_logits=False only used by inception_v3
     if "inception_v3" == net:
         return models[net](aux_logits=False).to(device="cuda")
     elif net in models:
+        if net == 'resnet50' and nhwc:
+            model = gbn_models.build_resnet('resnet50', 'classic')
+            model = model.to("cuda", non_blocking=True)
+            return model.to(memory_format = torch.channels_last)
         return models[net]().to(device="cuda")
     elif net in segmentation_models:
         return segmentation_models[net]().to(device="cuda")
@@ -186,7 +191,7 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
     else:
         torch.cuda.set_device("cuda:0")
 
-    network = get_network(net)
+    network = get_network(net, args.nhwc)
     if "shufflenet" == net:
         model.apply(weight_init)
 
@@ -226,7 +231,10 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
         elif (distributed_dataparallel):
             devices_to_run_on = [(device_ids[local_rank % ngpus] if device_ids else local_rank)]
             print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
-            network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on, find_unused_parameters=True, broadcast_buffers=False, bucket_cap_mb=10)
+            if net == 'resnet50' and args.nhwc:
+                network = apex.parallel.DistributedDataParallel(network, gradient_predivide_factor=ngpus/8.0, delay_allreduce=True, retain_allreduce_buffers=True)
+            else:
+                network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on, find_unused_parameters=True, broadcast_buffers=False, bucket_cap_mb=10)
             batch_size = batch_size
 
     ## warmup.
@@ -360,6 +368,7 @@ if __name__ == '__main__':
     parser.add_argument("--kineto", action='store_true', required=False, help="Turn kineto profiling on")
     parser.add_argument("--autograd_profiler", action='store_true', required=False, help="Use PyTorch autograd (old) profiler")
     parser.add_argument("--fp16", action='store_true', required=False,help="FP16 mixed precision benchmarking")
+    parser.add_argument("--nhwc", action='store_true', required=False,help="Use NHWC dataformat")
     parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
     parser.add_argument("--dataparallel", action='store_true', required=False, help="Use torch.nn.DataParallel api to run single process on multiple devices. Use only one of --dataparallel or --distributed_dataparallel")
     parser.add_argument("--horovod", action='store_true', required=False, help="Use horovod for distributed work")
