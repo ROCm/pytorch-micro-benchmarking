@@ -5,6 +5,7 @@ import time
 import argparse
 import os
 import sys
+import copy
 import math
 import torch.nn as nn
 import torch.multiprocessing as mp
@@ -145,21 +146,53 @@ def rendezvous(distributed_parameters):
     torch.distributed.init_process_group(backend=distributed_parameters['dist_backend'], init_method=distributed_parameters['dist_url'], rank=distributed_parameters['rank'], world_size=distributed_parameters['world_size'])
     print("Rendezvous complete. Created process group...")
 
-def run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, kineto, autograd_profiler, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
-    if (dataparallel or distributed_dataparallel):
-        ngpus = len(device_ids) if device_ids else torch.cuda.device_count()
+def run_benchmarking_wrapper(params):
+    params.flops_prof_step = max(0, min(params.flops_prof_step, params.iterations - 1))
+    if (params.device_ids):
+        params.device_ids = [int(x) for x in params.device_ids.split(",")]
     else:
-        ngpus = 1
+        params.device_ids = None
+    params.distributed_parameters = {}
+    params.distributed_parameters['rank'] = params.rank
+    params.distributed_parameters['world_size'] = params.world_size
+    params.distributed_parameters['dist_backend'] = params.dist_backend
+    params.distributed_parameters['dist_url'] = params.dist_url
 
-    if (distributed_dataparallel):
+    # Some arguments are required for distributed_dataparallel
+    if params.distributed_dataparallel:
+        assert params.rank is not None and \
+               params.world_size is not None and \
+               params.dist_backend is not None and \
+               params.dist_url is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
+    
+    if (params.dataparallel or params.distributed_dataparallel):
+        vars(params)['ngpus'] = len(params.device_ids) if params.device_ids else torch.cuda.device_count()
+    else:
+        vars(params)['ngpus'] = 1
+
+    if (params.distributed_dataparallel):
         # Assumption below that each process launched with --distributed_dataparallel has the same number of devices visible/specified
-        distributed_parameters['world_size'] = ngpus * distributed_parameters['world_size']
-        distributed_parameters['rank'] = ngpus * distributed_parameters['rank']
-        mp.spawn(run_benchmarking, nprocs=ngpus, args=(ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, kineto, autograd_profiler, dataparallel, distributed_dataparallel, device_ids, distributed_parameters))
+        params.distributed_parameters['world_size'] = params.ngpus * params.distributed_parameters['world_size']
+        params.distributed_parameters['rank'] = params.ngpus * params.distributed_parameters['rank']
+        mp.spawn(run_benchmarking, nprocs=params.ngpus, args=(params,))
     else:
-        run_benchmarking(0, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, kineto, autograd_profiler, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None)
+        run_benchmarking(0, params)
 
-def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, kineto, autograd_profiler, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None):
+def run_benchmarking(local_rank, params):
+    device_ids = params.device_ids
+    ngpus = params.ngpus
+    net = params.network
+    run_fp16 = params.fp16
+    amp_opt_level = params.amp_opt_level
+    dataparallel = params.dataparallel
+    distributed_dataparallel = params.distributed_dataparallel
+    distributed_parameters = params.distributed_parameters
+    batch_size = params.batch_size
+    kineto = params.kineto
+    iterations = params.iterations
+    autograd_profiler = params.autograd_profiler
+    flops_prof_step = params.flops_prof_step
+
     if device_ids:
         assert ngpus == len(device_ids)
         torch.cuda.set_device("cuda:%d" % device_ids[local_rank])
@@ -292,35 +325,7 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
       print ("Throughput [img/sec] : {}".format(batch_size*world_size/time_per_batch))
 
 def main():
-    net = args.network
-    batch_size = args.batch_size
-    iterations = args.iterations
-    flops_prof_step = args.flops_prof_step
-    flops_prof_step = max(0, min(flops_prof_step, iterations - 1))
-    run_fp16 = args.fp16
-    amp_opt_level = args.amp_opt_level
-    kineto = args.kineto
-    autograd_profiler = args.autograd_profiler
-    dataparallel = args.dataparallel
-    distributed_dataparallel = args.distributed_dataparallel
-    device_ids_str = args.device_ids
-    if (args.device_ids):
-        device_ids = [int(x) for x in device_ids_str.split(",")]
-    else:
-        device_ids = None
-    distributed_parameters = {}
-    distributed_parameters['rank'] = args.rank
-    distributed_parameters['world_size'] = args.world_size
-    distributed_parameters['dist_backend'] = args.dist_backend
-    distributed_parameters['dist_url'] = args.dist_url
-    # Some arguments are required for distributed_dataparallel
-    if distributed_dataparallel:
-        assert args.rank is not None and \
-               args.world_size is not None and \
-               args.dist_backend is not None and \
-               args.dist_url is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
-
-    run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, kineto, autograd_profiler, dataparallel, distributed_dataparallel, device_ids, distributed_parameters)
+    run_benchmarking_wrapper(copy.deepcopy(args))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
