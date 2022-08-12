@@ -9,6 +9,7 @@ fi
 DATE=$(date +%y%m%d-%H%M%S)
 outdir=perf_run_${model}_${tag}_${DATE}
 mkdir ${outdir}
+export PYTORCH_MIOPEN_SUGGEST_NHWC=1
 
 function run_pyt_cnn() {
     model=$1
@@ -16,7 +17,8 @@ function run_pyt_cnn() {
     batch_per_gpu=$3
     use_amp=$4
     use_horovod=$5
-    tag=$6
+    format=$6
+    tag=$7
     LOG=${outdir}/run_${model}_gbs$((gpus_per_node*batch_per_gpu))_${gpus_per_node}GPUs_${tag}
     DATE=$(date +%y%m%d-%H%M%S)
 
@@ -30,6 +32,10 @@ function run_pyt_cnn() {
     if [[ ${use_amp} == "true" ]]; then
         cmd+=" --amp-opt-level 1"
         LOG+="_amp"
+        if [[ ${format} == "nhwc" ]]; then
+            cmd+=" --nhwc"
+            LOG+="_nhwc"
+        fi
     fi
     LOG+="_${DATE}.log"
     echo ${cmd} | tee ${LOG}
@@ -39,15 +45,9 @@ function run_pyt_cnn() {
 for bs_per_gpu in `echo 128 256 512`; do
     for gpus_per_node in `echo 8 2`; do
         for i in `seq 1 ${iter}`; do
-            run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} true false ${tag}
-        done
-    done
-done
-
-for bs_per_gpu in `echo 128 256`; do
-    for gpus_per_node in `echo 8 2`; do
-        for i in `seq 1 ${iter}`; do
-            run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} false false ${tag}
+            #run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} true false nchw ${tag}
+            run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} true false nhwc ${tag}
+            #run_pyt_cnn ${model} ${gpus_per_node} ${bs_per_gpu} false false nchw ${tag}
         done
     done
 done
