@@ -166,9 +166,9 @@ def run_benchmarking_wrapper(params):
                params.dist_url is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
     
     if (params.dataparallel or params.distributed_dataparallel):
-        vars(params)['ngpus'] = len(params.device_ids) if params.device_ids else torch.cuda.device_count()
+        params.ngpus = len(params.device_ids) if params.device_ids else torch.cuda.device_count()
     else:
-        vars(params)['ngpus'] = 1
+        params.ngpus = 1
 
     if (params.distributed_dataparallel):
         # Assumption below that each process launched with --distributed_dataparallel has the same number of devices visible/specified
