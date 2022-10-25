@@ -11,7 +11,12 @@ Default are 10 training iterations, `fp16` off (i.e., 0), and a batch size of 64
 For mGPU runs, `--distributed_dataparallel` with 1 GPU per process is recommended for best performance.
 `--distributed_dataparallel` will spawn multiple sub-processes for each of the `device_ids` and adjust world_size and rank accordingly.
 
-Eg. for a 2-GPU run on a single node:
+Eg. 
+for a 1-GPU resnet50 run:
+```
+python3 micro_benchmarking_pytorch.py --network resnet50
+```
+for a 2-GPU run on a single node:
 ```
 python3 micro_benchmarking_pytorch.py --device_ids=0 --network resnet50 --distributed_dataparallel --rank 0 --world-size 2 --dist-backend nccl --dist-url tcp://127.0.0.1:4332 &
 python3 micro_benchmarking_pytorch.py --device_ids=1 --network resnet50 --distributed_dataparallel --rank 1 --world-size 2 --dist-backend nccl --dist-url tcp://127.0.0.1:4332 &
