@@ -13,6 +13,10 @@ from fp16util import network_to_half, get_param_copy
 from shufflenet import shufflenet
 from shufflenet_v2 import shufflenet as shufflenet_v2
 from xception import xception
+
+import torch._dynamo
+torch._dynamo.config.verbose=True
+
 try:
     import apex
     HAVE_APEX = True
@@ -205,6 +209,9 @@ def run_benchmarking(local_rank, params):
 
     if (run_fp16):
         network = network_to_half(network)
+
+    if params.compile:
+        network = torch.compile(network)
         
     param_copy = network.parameters()
     if (run_fp16):
@@ -344,6 +351,7 @@ if __name__ == '__main__':
     parser.add_argument("--world-size", type=int, required=False, default=None, help="Total number of ranks/processes. Required for --distributed_dataparallel")
     parser.add_argument("--dist-backend", type=str, required=False, default=None, help="Backend used for distributed training. Can be one of 'nccl' or 'gloo'. Required for --distributed_dataparallel")
     parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
+    parser.add_argument("--compile", action='store_true', required=False, help="use pytorch 2.0")
 
     args = parser.parse_args()
 
