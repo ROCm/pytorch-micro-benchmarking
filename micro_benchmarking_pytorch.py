@@ -14,8 +14,14 @@ from shufflenet import shufflenet
 from shufflenet_v2 import shufflenet as shufflenet_v2
 from xception import xception
 
-import torch._dynamo
-torch._dynamo.config.verbose=True
+try:
+    import torch._dynamo
+    torch._dynamo.config.verbose=True
+    HAVE_DYNAMO = True
+except:
+    HAVE_DYNAMO = False
+
+IS_PT2 = hasattr(torch, "compile")
 
 try:
     import apex
@@ -211,7 +217,11 @@ def run_benchmarking(local_rank, params):
         network = network_to_half(network)
 
     if params.compile:
-        network = torch.compile(network)
+        if IS_PT2:
+            network = torch.compile(network)
+        else:
+            print ("ERROR: requested torch.compile but this isn't pytorch 2.x")
+            sys.exit(1)
         
     param_copy = network.parameters()
     if (run_fp16):
