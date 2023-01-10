@@ -2,38 +2,22 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
-from apex.contrib.groupbn.batch_norm import BatchNorm2d_NHWC as gbn_persistent
+from apex.contrib.groupbn import BatchNorm2d_NHWC as gbn_persistent
 
 __all__ = ['ResNet', 'build_resnet', 'resnet_versions', 'resnet_configs']
-
-class BnAddRelu(gbn_persistent):
-    def __init__(self, planes, fuse_relu=False, bn_group=1):
-        super(BnAddRelu, self).__init__(planes, fuse_relu, bn_group=bn_group)
-
-    def to_channels_last(self, tensor):
-        return tensor.permute(0, 2, 3, 1).contiguous(memory_format=torch.contiguous_format)
-
-    def to_channels_first(self, tensor):
-        return tensor.permute(0, 3, 1, 2).to(memory_format=torch.channels_last)
-
-    def forward(self, tensor, residual=None):
-        tensor = self.to_channels_last(tensor)
-        if residual is not None:
-            residual = self.to_channels_last(residual)
-        out = super().forward(tensor, residual)
-        return self.to_channels_first(out)
-
 
 # ResNetBuilder {{{
 
 class ResNetBuilder(object):
-    def __init__(self, version, config):
+    def __init__(self, version, config, local_rank=0, get_logs=False):
         self.config = config
 
         self.L = sum(version['layers'])
         self.M = version['block'].M
+        self.local_rank=local_rank
+        self.get_logs=get_logs
 
-    def conv(self, kernel_size, in_planes, out_planes, stride=1):
+    def conv(self, kernel_size, in_planes, out_planes, name, stride=1):
         if kernel_size == 3:
             conv = self.config['conv'](
                     in_planes, out_planes, kernel_size=3, stride=stride,
@@ -57,19 +41,19 @@ class ResNetBuilder(object):
 
         return conv
 
-    def conv3x3(self, in_planes, out_planes, stride=1):
+    def conv3x3(self, in_planes, out_planes, stride=1, name=None):
         """3x3 convolution with padding"""
-        c = self.conv(3, in_planes, out_planes, stride=stride)
+        c = self.conv(3, in_planes, out_planes, name=name, stride=stride)
         return c
 
-    def conv1x1(self, in_planes, out_planes, stride=1):
+    def conv1x1(self, in_planes, out_planes, stride=1, name=None):
         """1x1 convolution with padding"""
-        c = self.conv(1, in_planes, out_planes, stride=stride)
+        c = self.conv(1, in_planes, out_planes, name=name, stride=stride)
         return c
 
-    def conv7x7(self, in_planes, out_planes, stride=1):
+    def conv7x7(self, in_planes, out_planes, stride=1, name=None):
         """7x7 convolution with padding"""
-        c = self.conv(7, in_planes, out_planes, stride=stride)
+        c = self.conv(7, in_planes, out_planes, name=name, stride=stride)
         return c
 
     def conv5x5(self, in_planes, out_planes, stride=1):
@@ -87,9 +71,13 @@ class ResNetBuilder(object):
 
     def activation(self):
         return self.config['activation']()
+
+    def fc(self, planes, num_classes=1000):
+        fc = nn.Linear(planes, num_classes)
+        return fc
     
-    def groupbn(self, planes, fuse_relu=True, bn_group=1):
-        bn = BnAddRelu(planes, fuse_relu=fuse_relu, bn_group=bn_group)
+    def groupbn(self, planes, fuse_relu=True, bn_group=1, torch_channels_last=True, name_beta=None, name_gamma=None):
+        bn = gbn_persistent(planes, fuse_relu=fuse_relu, bn_group=bn_group, torch_channels_last=torch_channels_last, cta_launch_margin=0)
         return bn
 
 # ResNetBuilder }}}
@@ -137,15 +125,15 @@ class Bottleneck(nn.Module):
     M = 3
     expansion = 4
 
-    def __init__(self, builder, inplanes, planes, stride=1, downsample=None):
+    def __init__(self, builder, inplanes, planes, stride=1, downsample=None, stage=1, unit=1):
         super(Bottleneck, self).__init__()
-        self.conv1 = builder.conv1x1(inplanes, planes)
-        self.group_bn_1 = builder.groupbn(planes, fuse_relu=True)
-        self.conv2 = builder.conv3x3(planes, planes, stride=stride)
-        self.group_bn_2 = builder.groupbn(planes, fuse_relu=True)
-        self.conv3 = builder.conv1x1(planes, planes * self.expansion)
+        self.conv1 = builder.conv1x1(inplanes, planes, name="stage" + str(stage) + "_unit" + str(unit) + "_conv1_weight")
+        self.group_bn_1 = builder.groupbn(planes, fuse_relu=True, torch_channels_last=True, name_beta= "stage" + str(stage) + "_unit" + str(unit) + "_bn1_beta", name_gamma="stage" + str(stage) + "_unit" + str(unit) + "_bn1_gamma")
+        self.conv2 = builder.conv3x3(planes, planes, stride=stride, name="stage" + str(stage) + "_unit" + str(unit) + "_conv2_weight")
+        self.group_bn_2 = builder.groupbn(planes, fuse_relu=True, torch_channels_last=True, name_beta= "stage" + str(stage) + "_unit" + str(unit) + "_bn2_beta", name_gamma="stage" + str(stage) + "_unit" + str(unit) + "_bn2_gamma")
+        self.conv3 = builder.conv1x1(planes, planes * self.expansion, name="stage" + str(stage) + "_unit" + str(unit) + "_conv3_weight")
         self.relu = builder.activation()
-        self.group_bn_3 = builder.groupbn(planes * self.expansion, fuse_relu=True)
+        self.group_bn_3 = builder.groupbn(planes * self.expansion, fuse_relu=True, torch_channels_last=True, name_beta= "stage" + str(stage) + "_unit" + str(unit) + "_bn3_beta", name_gamma="stage" + str(stage) + "_unit" + str(unit) + "_bn3_gamma")
         self.downsample = downsample
         self.stride = stride
 
@@ -172,24 +160,25 @@ class ResNet(nn.Module):
     def __init__(self, builder, block, layers, num_classes=1000):
         self.inplanes = 64
         super(ResNet, self).__init__()
-        self.conv1 = builder.conv7x7(3, 64, stride=2)
+        self.conv1 = builder.conv7x7(3, 64, stride=2, name="conv0_weight")
         self.relu = builder.activation()
-        self.group_bn1 = builder.groupbn(64, fuse_relu=True)
+        self.group_bn1 = builder.groupbn(64, fuse_relu=True, torch_channels_last=True, name_beta= "bn0_beta", name_gamma="bn0_gamma")
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(builder, block, 64, layers[0])
-        self.layer2 = self._make_layer(builder, block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(builder, block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(builder, block, 512, layers[3], stride=2)
+        self.layer1 = self._make_layer(builder, block, 64, layers[0], 1, unit=1)
+        self.layer2 = self._make_layer(builder, block, 128, layers[1], 2, unit=2, stride=2)
+        self.layer3 = self._make_layer(builder, block, 256, layers[2], 3, unit=3, stride=2)
+        self.layer4 = self._make_layer(builder, block, 512, layers[3], 4, unit=4, stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        self.fc = builder.fc(512 * block.expansion, num_classes)
 
-    def _make_layer(self, builder, block, planes, blocks, stride=1):
+
+    def _make_layer(self, builder, block, planes, blocks, stage, unit=1, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             dconv = builder.conv1x1(self.inplanes, planes * block.expansion,
-                                    stride=stride)
+                                    stride=stride, name="stage"+ str(stage) +"_unit"+ str(unit) + "_conv"+str(unit) + "sc_weight")
             
-            dbn = builder.groupbn(planes * block.expansion, fuse_relu=False)
+            dbn = builder.groupbn(planes * block.expansion, fuse_relu=False, name_beta= "stage" + str(stage) + "_unit" + str(unit) + "_bn_sc_beta", name_gamma="stage" + str(stage) + "_unit" + str(unit) + "_bn_sc_gamma")
             
             if dbn is not None: 
                 downsample = nn.Sequential(dconv, dbn)
@@ -197,7 +186,7 @@ class ResNet(nn.Module):
                 downsample = dconv
 
         layers = []
-        layers.append(block(builder, self.inplanes, planes, stride, downsample))
+        layers.append(block(builder, self.inplanes, planes, stride, downsample, stage, unit))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
             layers.append(block(builder, self.inplanes, planes))
@@ -274,11 +263,11 @@ resnet_versions = {
             },
         }
 
-def build_resnet(version, config, model_state=None):
+def build_resnet(version, config, model_state=None, local_rank=0, get_logs=False):
     version = resnet_versions[version]
     config = resnet_configs[config]
 
-    builder = ResNetBuilder(version, config)
+    builder = ResNetBuilder(version, config, local_rank=local_rank, get_logs=get_logs)
     print("Version: {}".format(version))
     print("Config: {}".format(config))
     model = version['net'](builder,
