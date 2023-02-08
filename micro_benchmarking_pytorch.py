@@ -223,15 +223,15 @@ def run_benchmarking(local_rank, params):
                        "fullgraph": False,
                        "backend": "inductor",
                        "passes": None}
+        passes = None  # needed for internal pytorch checks
         if params.compileContext:
             compile_ctx.update(ast.literal_eval(params.compileContext))
             if compile_ctx["mode"] is not None and compile_ctx["passes"] is not None:
                 raise RuntimeError("Cannot specify mode and passes simultaneously")
-        passes = None  # needed for internal pytorch checks
-        if compile_ctx["passes"] is not None:
-            passes = {}  # needed to save multiple passes
-            for compiler_pass in compile_ctx["passes"].keys():
-                passes.update({compiler_pass: bool(compile_ctx["passes"][compiler_pass])})
+            if compile_ctx["passes"] is not None:
+                passes = {}  # needed to save multiple passes
+                for compiler_pass in compile_ctx["passes"].keys():
+                    passes.update({compiler_pass: bool(compile_ctx["passes"][compiler_pass])})
         if IS_PT2:
             network = torch.compile(network,
                                     mode=compile_ctx["mode"],
