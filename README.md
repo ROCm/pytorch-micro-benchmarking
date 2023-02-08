@@ -29,3 +29,45 @@ To run FlopsProfiler (with deepspeed.profiling.flops_profiler imported):
 ## Performance tuning
 If performance on a specific card and/or model is found to be lacking, typically some gains can be made by tuning MIOpen. For this, `export MIOPEN_FIND_ENFORCE=3` prior to running the model. This will take some time if untuned configurations are encountered and write to a local performance database. More information on this can be found in the [MIOpen documentation](https://rocmsoftwareplatform.github.io/MIOpen/doc/html/perfdatabase.html).
 
+## PyTorch 2.0
+Added the `--compile` option opens up PyTorch 2.0 capabilities, which comes with several options. Here are some notes from upstream: 
+```
+    Optimizes given model/function using Dynamo and specified backend
+
+    Args:
+       model (Callable): Module/function to optimize
+       fullgraph (bool): Whether it is ok to break model into several subgraphs
+       dynamic (bool): Use dynamic shape tracing
+       backend (str or Callable): backend to be used
+       mode (str): Can be either "default", "reduce-overhead" or "max-autotune"
+       passes (dict): A dictionary of passes to the backend. Passes currently recognized by inductor backend:
+                       - static-memory
+                       - matmul-tune
+                       - matmul-padding
+                       - triton-autotune
+                       - triton-bmm
+                       - triton-mm
+                       - triton-convolution
+                       - rematerialize-threshold
+                       - rematerialize-acc-threshold
+
+    Example::
+
+        @torch.compile(passes={"matmul-padding": True}, fullgraph=True)
+        def foo(x):
+            return torch.sin(x) + torch.cos(x)
+```
+With the required `--compile` option, these additional options are now available from the command line with the `--compileContext` flag. Here are a few examples:
+
+```bash
+python microbenchmarking.py --network resnet50 --compile # default run
+```
+
+```bash
+python microbenchmarking.py --network resnet50 --compile --compileContext "{'mode': 'max-autotune', 'fullgraph': 'True'}"
+```
+
+```bash
+python microbenchmarking.py --network resnet50 --compile --compileContext "{'passes': {'static-memory': 'True', 'matmul-padding': 'True'}}"
+```
+Note: you cannot pass the `mode` and `passes` options together.

@@ -217,18 +217,28 @@ def run_benchmarking(local_rank, params):
     if (run_fp16):
         network = network_to_half(network)
 
-    compile_ctx = {"mode": "None",
-                   "dynamic": "None",
-                   "fullgraph": "None",
-                   "backend": "None"}
     if params.compile:
-        compile_ctx.update(ast.literal_eval(params.compile))
+        compile_ctx = {"mode": None,
+                       "dynamic": False,
+                       "fullgraph": False,
+                       "backend": "inductor",
+                       "passes": None}
+        if params.compileContext:
+            compile_ctx.update(ast.literal_eval(params.compileContext))
+            if compile_ctx["mode"] is not None and compile_ctx["passes"] is not None:
+                raise RuntimeError("Cannot specify mode and passes simultaneously")
+        passes = None  # needed for internal pytorch checks
+        if compile_ctx["passes"] is not None:
+            passes = {}  # needed to save multiple passes
+            for compiler_pass in compile_ctx["passes"].keys():
+                passes.update({compiler_pass: bool(compile_ctx["passes"][compiler_pass])})
         if IS_PT2:
             network = torch.compile(network,
-                                    compile_ctx["mode"],
-                                    compile_ctx["dynamic"],
-                                    compile_ctx["fullgraph"],
-                                    compile_ctx["backend"])
+                                    mode=compile_ctx["mode"],
+                                    dynamic=bool(compile_ctx["dynamic"]),
+                                    fullgraph=bool(compile_ctx["fullgraph"]),
+                                    backend=compile_ctx["backend"],
+                                    passes=passes)
         else:
             print ("ERROR: requested torch.compile but this isn't pytorch 2.x")
             sys.exit(1)
@@ -371,7 +381,8 @@ if __name__ == '__main__':
     parser.add_argument("--world-size", type=int, required=False, default=None, help="Total number of ranks/processes. Required for --distributed_dataparallel")
     parser.add_argument("--dist-backend", type=str, required=False, default=None, help="Backend used for distributed training. Can be one of 'nccl' or 'gloo'. Required for --distributed_dataparallel")
     parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
-    parser.add_argument("--compile", default={}, action='store_true', required=False, help="use pytorch 2.0")
+    parser.add_argument("--compile", action='store_true', required=False, help="use pytorch 2.0")
+    parser.add_argument("--compileContext", default={}, required=False, help="additional compile options")
 
     args = parser.parse_args()
 
