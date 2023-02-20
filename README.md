@@ -32,7 +32,7 @@ If performance on a specific card and/or model is found to be lacking, typically
 ## PyTorch 2.0
 Added the `--compile` option opens up PyTorch 2.0 capabilities, which comes with several options. Here are some notes from upstream: 
 ```
-    Optimizes given model/function using Dynamo and specified backend
+    Optimizes given model/function using TorchDynamo and specified backend.
 
     Args:
        model (Callable): Module/function to optimize
@@ -40,23 +40,16 @@ Added the `--compile` option opens up PyTorch 2.0 capabilities, which comes with
        dynamic (bool): Use dynamic shape tracing
        backend (str or Callable): backend to be used
        mode (str): Can be either "default", "reduce-overhead" or "max-autotune"
-       passes (dict): A dictionary of passes to the backend. Passes currently recognized by inductor backend:
-                       - static-memory
-                       - matmul-tune
-                       - matmul-padding
-                       - triton-autotune
-                       - triton-bmm
-                       - triton-mm
-                       - triton-convolution
-                       - rematerialize-threshold
-                       - rematerialize-acc-threshold
+       options (dict): A dictionary of options to pass to the backend.
+       disable (bool): Turn torch.compile() into a no-op for testing
 
     Example::
 
-        @torch.compile(passes={"matmul-padding": True}, fullgraph=True)
+        @torch.compile(options={"matmul-padding": True}, fullgraph=True)
         def foo(x):
             return torch.sin(x) + torch.cos(x)
 ```
+
 With the required `--compile` option, these additional options are now available from the command line with the `--compileContext` flag. Here are a few examples:
 
 ```bash
@@ -68,6 +61,6 @@ python microbenchmarking.py --network resnet50 --compile --compileContext "{'mod
 ```
 
 ```bash
-python microbenchmarking.py --network resnet50 --compile --compileContext "{'passes': {'static-memory': 'True', 'matmul-padding': 'True'}}"
+python microbenchmarking.py --network resnet50 --compile --compileContext "{'options': {'static-memory': 'True', 'matmul-padding': 'True'}}"
 ```
-Note: you cannot pass the `mode` and `passes` options together.
+Note: you cannot pass the `mode` and `options` options together.

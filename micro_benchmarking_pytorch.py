@@ -222,23 +222,25 @@ def run_benchmarking(local_rank, params):
                        "dynamic": False,
                        "fullgraph": False,
                        "backend": "inductor",
-                       "passes": None}
-        passes = None  # needed for internal pytorch checks
+                       "options": None,
+                       "disable": False}
+        options = None  # needed for internal pytorch checks
         if params.compileContext:
             compile_ctx.update(ast.literal_eval(params.compileContext))
-            if compile_ctx["mode"] is not None and compile_ctx["passes"] is not None:
-                raise RuntimeError("Cannot specify mode and passes simultaneously")
-            if compile_ctx["passes"] is not None:
-                passes = {}  # needed to save multiple passes
-                for compiler_pass in compile_ctx["passes"].keys():
-                    passes.update({compiler_pass: bool(compile_ctx["passes"][compiler_pass])})
+            if compile_ctx["mode"] is not None and compile_ctx["options"] is not None:
+                raise RuntimeError("Cannot specify mode and options simultaneously")
+            if compile_ctx["options"] is not None:
+                options = {}  # needed to save multiple options
+                for compiler_pass in compile_ctx["options"].keys():
+                    options.update({compiler_pass: bool(compile_ctx["options"][compiler_pass])})
         if IS_PT2:
             network = torch.compile(network,
                                     mode=compile_ctx["mode"],
                                     dynamic=bool(compile_ctx["dynamic"]),
                                     fullgraph=bool(compile_ctx["fullgraph"]),
                                     backend=compile_ctx["backend"],
-                                    passes=passes)
+                                    options=options,
+                                    disable=compile_ctx["disable"])
         else:
             print ("ERROR: requested torch.compile but this isn't pytorch 2.x")
             sys.exit(1)
