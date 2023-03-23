@@ -53,14 +53,14 @@ Added the `--compile` option opens up PyTorch 2.0 capabilities, which comes with
 With the required `--compile` option, these additional options are now available from the command line with the `--compileContext` flag. Here are a few examples:
 
 ```bash
-python microbenchmarking.py --network resnet50 --compile # default run
+python micro_benchmarking_pytorch.py --network resnet50 --compile # default run
 ```
 
 ```bash
-python microbenchmarking.py --network resnet50 --compile --compileContext "{'mode': 'max-autotune', 'fullgraph': 'True'}"
+python micro_benchmarking_pytorch.py --network resnet50 --compile --compileContext "{'mode': 'max-autotune', 'fullgraph': 'True'}"
 ```
 
 ```bash
-python microbenchmarking.py --network resnet50 --compile --compileContext "{'options': {'static-memory': 'True', 'matmul-padding': 'True'}}"
+python micro_benchmarking_pytorch.py --network resnet50 --compile --compileContext "{'options': {'static-memory': 'True', 'matmul-padding': 'True'}}"
 ```
 Note: you cannot pass the `mode` and `options` options together.
