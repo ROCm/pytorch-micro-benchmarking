@@ -13,7 +13,7 @@ from shufflenet import shufflenet
 from shufflenet_v2 import shufflenet as shufflenet_v2
 from xception import xception
 import gbn_resnet as gbn_models
-import horovod.torch as hvd
+#import horovod.torch as hvd
 try:
     import apex
     HAVE_APEX = True
@@ -133,7 +133,7 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
 
 
     #print('loss: ', loss, flush=True)
-    if hvd.is_initialized():
+    if False:#hvd.is_initialized():
         reduced_loss = hvd.allreduce(loss.data, name='train_loss')
     elif torch.distributed.is_initialized():
         rt = loss.data.clone()
@@ -147,7 +147,7 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
             scaled_loss.backward()
     else:
         loss.backward()
-    if hvd.is_initialized():
+    if False:#hvd.is_initialized():
         optimizer.synchronize()
 
     if flops_prof_step:
@@ -156,7 +156,7 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
         # params = prof.get_total_params(as_string=True)
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
-    if hvd.is_initialized():
+    if False:#hvd.is_initialized():
         with optimizer.skip_synchronize():
             optimizer.step()
     else:
@@ -183,7 +183,8 @@ def run_benchmarking_wrapper(net, batch_size, iterations, flops_prof_step, amp_o
         run_benchmarking(0, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, args=args)
 
 def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_step, amp_opt_level, run_fp16, dataparallel, distributed_dataparallel, device_ids=None, distributed_parameters=None, args=None):
-    if not hvd.is_initialized() and distributed_dataparallel:
+    #if not hvd.is_initialized() and distributed_dataparallel:
+    if distributed_dataparallel:
         rendezvous(distributed_parameters)
     if device_ids:
         assert ngpus == len(device_ids)
@@ -215,14 +216,14 @@ def run_benchmarking(local_rank, ngpus, net, batch_size, iterations, flops_prof_
         param_copy = get_param_copy(network)
     optimizer = torch.optim.SGD(param_copy, lr = 0.01, momentum = 0.9)
 
-    if hvd.is_initialized():
+    if False:#hvd.is_initialized():
         optimizer = hvd.DistributedOptimizer(optimizer)#, named_parameters=network.named_parameters())
         hvd.broadcast_parameters(network.state_dict(), root_rank=0)
         hvd.broadcast_optimizer_state(optimizer, root_rank=0)
     if (amp_opt_level):
         network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
 
-    if not hvd.is_initialized():
+    if True:#not hvd.is_initialized():
         if (dataparallel):
             devices_to_run_on = device_ids if device_ids else list(range(ngpus))
             print ("INFO: Running dataparallel on devices: {}".format(str(devices_to_run_on)))
