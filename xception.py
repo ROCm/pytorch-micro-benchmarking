@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import math
 import torch.nn as nn
 import torch.nn.functional as F
