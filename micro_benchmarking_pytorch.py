@@ -210,7 +210,9 @@ def run_benchmarking_wrapper(params):
                params.distributed_parameters['dist_backend'] is not None and \
                params.distributed_parameters['dist_url'] is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
 
-    if (params.dataparallel or params.distributed_dataparallel):
+    if is_torchrun:
+        params.ngpus = params.distributed_parameters['world_size']
+    elif params.dataparallel or params.distributed_dataparallel:
         params.ngpus = len(params.device_ids) if params.device_ids else torch.cuda.device_count()
     else:
         params.ngpus = 1
@@ -388,7 +390,7 @@ def run_benchmarking(local_rank, params):
     print ("OK: finished running benchmark..")
     print ("--------------------SUMMARY--------------------------")
     print ("Microbenchmark for network : {}".format(net))
-    if (distributed_dataparallel):
+    if distributed_dataparallel or is_torchrun:
       print ("--------This process: rank " + str(distributed_parameters['rank']) + "--------");
       print ("Num devices: 1")
     else:
@@ -397,7 +399,7 @@ def run_benchmarking(local_rank, params):
     print ("Mini batch size [img] : {}".format(batch_size))
     print ("Time per mini-batch : {}".format(time_per_batch))
     print ("Throughput [img/sec] : {}".format(batch_size/time_per_batch))
-    if (distributed_dataparallel):
+    if (distributed_dataparallel or is_torchrun) and distributed_parameters['rank'] == 0:
       print ("")
       print ("--------Overall (all ranks) (assuming same num/type devices for each rank)--------")
       world_size = distributed_parameters['world_size']
