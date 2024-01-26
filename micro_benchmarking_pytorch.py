@@ -24,6 +24,11 @@ except:
 
 IS_PT2 = hasattr(torch, "compile")
 
+is_torchrun = False
+if "LOCAL_RANK" in os.environ:
+    # this indicates we're using torchrun
+    is_torchrun = True
+
 try:
     import apex
     HAVE_APEX = True
@@ -187,24 +192,32 @@ def run_benchmarking_wrapper(params):
     else:
         params.device_ids = None
     params.distributed_parameters = {}
-    params.distributed_parameters['rank'] = params.rank
-    params.distributed_parameters['world_size'] = params.world_size
-    params.distributed_parameters['dist_backend'] = params.dist_backend
-    params.distributed_parameters['dist_url'] = params.dist_url
+    if is_torchrun:
+        params.distributed_parameters['rank'] = int(os.environ["LOCAL_RANK"])
+        params.distributed_parameters['world_size'] = int(os.environ["WORLD_SIZE"])
+        params.distributed_parameters['dist_backend'] = "nccl"
+        params.distributed_parameters['dist_url'] = 'tcp://' + os.environ["MASTER_ADDR"] + ":" + os.environ["MASTER_PORT"]
+    else:
+        params.distributed_parameters['rank'] = params.rank
+        params.distributed_parameters['world_size'] = params.world_size
+        params.distributed_parameters['dist_backend'] = params.dist_backend
+        params.distributed_parameters['dist_url'] = params.dist_url
 
     # Some arguments are required for distributed_dataparallel
     if params.distributed_dataparallel:
-        assert params.rank is not None and \
-               params.world_size is not None and \
-               params.dist_backend is not None and \
-               params.dist_url is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
-    
+        assert params.distributed_parameters['rank'] is not None and \
+               params.distributed_parameters['world_size'] is not None and \
+               params.distributed_parameters['dist_backend'] is not None and \
+               params.distributed_parameters['dist_url'] is not None, "rank, world-size, dist-backend and dist-url are required arguments for distributed_dataparallel"
+
     if (params.dataparallel or params.distributed_dataparallel):
         params.ngpus = len(params.device_ids) if params.device_ids else torch.cuda.device_count()
     else:
         params.ngpus = 1
 
-    if (params.distributed_dataparallel):
+    if is_torchrun:
+        run_benchmarking(params.distributed_parameters['rank'], params)
+    elif params.distributed_dataparallel:
         # Assumption below that each process launched with --distributed_dataparallel has the same number of devices visible/specified
         params.distributed_parameters['world_size'] = params.ngpus * params.distributed_parameters['world_size']
         params.distributed_parameters['rank'] = params.ngpus * params.distributed_parameters['rank']
@@ -227,7 +240,9 @@ def run_benchmarking(local_rank, params):
     autograd_profiler = params.autograd_profiler
     flops_prof_step = params.flops_prof_step
 
-    if device_ids:
+    if is_torchrun:
+        torch.cuda.set_device("cuda:%d" % local_rank)
+    elif device_ids:
         assert ngpus == len(device_ids)
         torch.cuda.set_device("cuda:%d" % device_ids[local_rank])
     else:
@@ -267,7 +282,7 @@ def run_benchmarking(local_rank, params):
         else:
             print ("ERROR: requested torch.compile but this isn't pytorch 2.x")
             sys.exit(1)
-        
+
     param_copy = network.parameters()
     if (run_fp16):
         param_copy = get_param_copy(network)
@@ -276,7 +291,13 @@ def run_benchmarking(local_rank, params):
     if (amp_opt_level):
         network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
 
-    if (dataparallel):
+    if is_torchrun:
+        rendezvous(distributed_parameters)
+        devices_to_run_on = [local_rank]
+        print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
+        network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
+        batch_size = int(batch_size / ngpus)
+    elif (dataparallel):
         devices_to_run_on = device_ids if device_ids else list(range(ngpus))
         print ("INFO: Running dataparallel on devices: {}".format(str(devices_to_run_on)))
         network = torch.nn.DataParallel(network, device_ids=devices_to_run_on)
