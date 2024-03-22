@@ -87,30 +87,33 @@ models = {
         "vgg19_bn" :           torchvision.models.vgg19_bn,
         "wide_resnet50_2" :    torchvision.models.wide_resnet50_2,
         "wide_resnet101_2" :   torchvision.models.wide_resnet101_2,
-        "swin_t" :             torchvision.models.swin_t,
-        "swin_s" :             torchvision.models.swin_s,
-        "swin_b" :             torchvision.models.swin_b,
-        "swin_v2_t" :          torchvision.models.swin_v2_t,
-        "swin_v2_s" :          torchvision.models.swin_v2_s,
-        "swin_v2_b" :          torchvision.models.swin_v2_b,
-        "vit_b_16":            torchvision.models.vit_b_16,
-        "vit_b_32":            torchvision.models.vit_b_32,
-        "vit_l_16":            torchvision.models.vit_l_16,
-        "vit_l_32":            torchvision.models.vit_l_32,
-        "vit_h_14":            torchvision.models.vit_h_14,
-        "efficientnet_b0" :    torchvision.models.efficientnet_b0,
-        "efficientnet_b1" :    torchvision.models.efficientnet_b1,
-        "efficientnet_b2" :    torchvision.models.efficientnet_b2,
-        "efficientnet_b3" :    torchvision.models.efficientnet_b3,
-        "efficientnet_b4" :    torchvision.models.efficientnet_b4,
-        "efficientnet_b5" :    torchvision.models.efficientnet_b5,
-        "efficientnet_b6" :    torchvision.models.efficientnet_b6,
-        "efficientnet_b7" :    torchvision.models.efficientnet_b7,
-        "maxvit_t" :           torchvision.models.maxvit_t,
         "xception" :           xception,
 }
 
 # newer torchvision models, for backwards compat
+try:
+    models["swin_t"] = torchvision.models.swin_t
+    models["swin_s"] = torchvision.models.swin_s
+    models["swin_b"] = torchvision.models.swin_b
+    models["swin_v2_t"] = torchvision.models.swin_v2_t
+    models["swin_v2_s"] = torchvision.models.swin_v2_s
+    models["swin_v2_b"] = torchvision.models.swin_v2_b
+    models["vit_b_16"] = torchvision.models.vit_b_16
+    models["vit_b_32"] = torchvision.models.vit_b_32
+    models["vit_l_16"] = torchvision.models.vit_l_16
+    models["vit_l_32"] = torchvision.models.vit_l_32
+    models["vit_h_14"] = torchvision.models.vit_h_14
+    models["efficientnet_b0"] = torchvision.models.efficientnet_b0
+    models["efficientnet_b1"] = torchvision.models.efficientnet_b1
+    models["efficientnet_b2"] = torchvision.models.efficientnet_b2
+    models["efficientnet_b3"] = torchvision.models.efficientnet_b3
+    models["efficientnet_b4"] = torchvision.models.efficientnet_b4
+    models["efficientnet_b5"] = torchvision.models.efficientnet_b5
+    models["efficientnet_b6"] = torchvision.models.efficientnet_b6
+    models["efficientnet_b7"] = torchvision.models.efficientnet_b7
+    models["maxvit_t"] = torchvision.models.maxvit_t
+except AttributeError:
+    pass
 try:
     models["mobilenet_v3_large"] = torchvision.models.mobilenet_v3_large
     models["mobilenet_v3_small"] = torchvision.models.mobilenet_v3_small
