@@ -212,7 +212,7 @@ def run_benchmarking_wrapper(params):
 
     if is_torchrun:
         params.ngpus = params.distributed_parameters['world_size']
-    elif params.dataparallel or params.distributed_dataparallel:
+    elif params.distributed_dataparallel:
         params.ngpus = len(params.device_ids) if params.device_ids else torch.cuda.device_count()
     else:
         params.ngpus = 1
@@ -233,7 +233,6 @@ def run_benchmarking(local_rank, params):
     net = params.network
     run_fp16 = params.fp16
     amp_opt_level = params.amp_opt_level
-    dataparallel = params.dataparallel
     distributed_dataparallel = params.distributed_dataparallel
     distributed_parameters = params.distributed_parameters
     batch_size = params.batch_size
@@ -299,10 +298,6 @@ def run_benchmarking(local_rank, params):
         print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
         network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
         batch_size = int(batch_size / ngpus)
-    elif (dataparallel):
-        devices_to_run_on = device_ids if device_ids else list(range(ngpus))
-        print ("INFO: Running dataparallel on devices: {}".format(str(devices_to_run_on)))
-        network = torch.nn.DataParallel(network, device_ids=devices_to_run_on)
     elif (distributed_dataparallel):
         distributed_parameters['rank'] += local_rank
         rendezvous(distributed_parameters)
@@ -422,9 +417,8 @@ if __name__ == '__main__':
     parser.add_argument("--autograd_profiler", action='store_true', required=False, help="Use PyTorch autograd (old) profiler")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
     parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
-    parser.add_argument("--dataparallel", action='store_true', required=False, help="Use torch.nn.DataParallel api to run single process on multiple devices. Use only one of --dataparallel or --distributed_dataparallel")
-    parser.add_argument("--distributed_dataparallel", action='store_true', required=False, help="Use torch.nn.parallel.DistributedDataParallel api to run on multiple processes/nodes. The multiple processes need to be launched manually, this script will only launch ONE process per invocation. Use only one of --dataparallel or --distributed_dataparallel")
-    parser.add_argument("--device_ids", type=str, required=False, default=None, help="Comma-separated list (no spaces) to specify which HIP devices (0-indexed) to run dataparallel or distributedDataParallel api on. Might need to use HIP_VISIBLE_DEVICES to limit visiblity of devices to different processes.")
+    parser.add_argument("--distributed_dataparallel", action='store_true', required=False, help="Use torch.nn.parallel.DistributedDataParallel api to run on multiple processes/nodes. The multiple processes need to be launched manually, this script will only launch ONE process per invocation. Either use --distributed_dataparallel and manually launch multiple processes or launch this script with `torchrun`")
+    parser.add_argument("--device_ids", type=str, required=False, default=None, help="Comma-separated list (no spaces) to specify which HIP devices (0-indexed) to run distributedDataParallel api on. Might need to use HIP_VISIBLE_DEVICES to limit visiblity of devices to different processes.")
     parser.add_argument("--rank", type=int, required=False, default=None, help="Rank of this process. Required for --distributed_dataparallel")
     parser.add_argument("--world-size", type=int, required=False, default=None, help="Total number of ranks/processes. Required for --distributed_dataparallel")
     parser.add_argument("--dist-backend", type=str, required=False, default=None, help="Backend used for distributed training. Can be one of 'nccl' or 'gloo'. Required for --distributed_dataparallel")

@@ -2,24 +2,32 @@
 We supply a small microbenchmarking script for PyTorch training on ROCm.
 
 To execute:
-`python micro_benchmarking_pytorch.py --network <network name> [--batch-size <batch size> ] [--iterations <number of iterations>] [--fp16 <0 or 1> ] `
+`python micro_benchmarking_pytorch.py --network <network name> [--batch-size <batch size> ] [--iterations <number of iterations>] [--fp16 <0 or 1> ] [--distributed_dataparallel] [--device_ids <comma separated list (no spaces) of GPU indices (0-indexed) to run distributed_dataparallel api on>] `
 
 Possible network names are: `alexnet`, `densenet121`, `inception_v3`, `resnet50`, `resnet101`, `SqueezeNet`, `vgg16` etc.
 
 Default are 10 training iterations, `fp16` off (i.e., 0), and a batch size of 64.
 
-For mGPU runs, use `torchrun` for best performance. It will spawn multiple sub-processes for each of the GPUs and adjust world_size and rank accordingly. `torchrun` also defaults to using distributed dataprallel.
-_NOTE_: `--dataprallel` is deprecated. `--distributed_dataprallel` option will also be deprecated as this path can be exercised now with `torchrun`.
+For mGPU runs, use one of the following methods.
+- `torchrun`: It will spawn multiple sub-processes for each of the GPUs and adjust `world_size` and `rank` accordingly. `torchrun` also defaults to using distributed dataparallel.
+- `--distributed_dataparallel`: Uses torch.nn.parallel.DistributedDataParallel to run multiple processes/node. However, the script only launches one process per GPU, multiple processes need to be launched manually. See example below.
+_NOTE_: `--distributed_dataparallel` option will be deprecated in the future as this path can be exercised now with `torchrun`.
+
 
 Eg. 
 for a 1-GPU resnet50 run:
 ```
 python3 micro_benchmarking_pytorch.py --network resnet50
 ```
-for a 2-GPU run on a single node, use `torchrun` to spawn multiple sub-proceses (one for each GPU). 
+for a 2-GPU run on a single node using `torchrun` to spawn multiple sub-proceses (one for each GPU). 
 ```
 torchrun --nproc-per-node 8 micro_benchmarking_pytorch.py --network resnet50
 
+```
+for a 2-GPU run on a single node using `--distributed_dataparallel`
+```
+python3 micro_benchmarking_pytorch.py --device_ids=0 --network resnet50 --distributed_dataparallel --rank 0 --world-size 2 --dist-backend nccl --dist-url tcp://127.0.0.1:4332 &
+python3 micro_benchmarking_pytorch.py --device_ids=1 --network resnet50 --distributed_dataparallel --rank 1 --world-size 2 --dist-backend nccl --dist-url tcp://127.0.0.1:4332 &
 ```
 
 To run FlopsProfiler (with deepspeed.profiling.flops_profiler imported):
