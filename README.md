@@ -13,7 +13,7 @@ For mGPU runs, use one of the following methods.
 - `--distributed_dataparallel`: Uses torch.nn.parallel.DistributedDataParallel to run multiple processes/node. However, the script only launches one process per GPU, multiple processes need to be launched manually. See example below.
   
 _NOTE_: `--distributed_dataparallel` option will be deprecated in the future as this path can be exercised now with `torchrun`.
-
+_NOTE_: If comparing `--distributed_dataprallel` performance with `torchrun` one, you need to multiply the `--batch-size` with number of nodes in the `torchrun` command. `torchrun` will split the batch size into mini batches that run on each of the nodes. `--distributed_dataparallel` doesn't do that automatically, it run with whatever the user provides.
 
 Examples: 
 - for a 1-GPU resnet50 run:
@@ -23,14 +23,14 @@ python3 micro_benchmarking_pytorch.py --network resnet50
 
 - for a 2-GPU run on a single node using `torchrun`:
 ```
-torchrun --nproc-per-node 2 micro_benchmarking_pytorch.py --network resnet50
+torchrun --nproc-per-node 2 micro_benchmarking_pytorch.py --network resnet50 --batch-size 128
 
 ```
 
 - for a 2-GPU run on a single node using `--distributed_dataparallel`:
 ```
-python3 micro_benchmarking_pytorch.py --device_ids=0 --network resnet50 --distributed_dataparallel --rank 0 --world-size 2 --dist-backend nccl --dist-url tcp://127.0.0.1:4332 &
-python3 micro_benchmarking_pytorch.py --device_ids=1 --network resnet50 --distributed_dataparallel --rank 1 --world-size 2 --dist-backend nccl --dist-url tcp://127.0.0.1:4332 &
+python3 micro_benchmarking_pytorch.py --device_ids=0 --network resnet50 --distributed_dataparallel --rank 0 --world-size 2 --dist-backend nccl --dist-url tcp://127.0.0.1:4332 --batch-size 64 &
+python3 micro_benchmarking_pytorch.py --device_ids=1 --network resnet50 --distributed_dataparallel --rank 1 --world-size 2 --dist-backend nccl --dist-url tcp://127.0.0.1:4332 --batch-size 64 &
 ```
 
 
