@@ -505,7 +505,6 @@ if __name__ == '__main__':
     parser.add_argument("--kineto", action='store_true', required=False, help="Turn kineto profiling on")
     parser.add_argument("--autograd_profiler", action='store_true', required=False, help="Use PyTorch autograd (old) profiler")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
-    parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level. Not used anymore.")
     parser.add_argument("--distributed_dataparallel", action='store_true', required=False, help="Use torch.nn.parallel.DistributedDataParallel api to run on multiple processes/nodes. The multiple processes need to be launched manually, this script will only launch ONE process per invocation. Either use --distributed_dataparallel and manually launch multiple processes or launch this script with `torchrun`")
     parser.add_argument("--device_ids", type=str, required=False, default=None, help="Comma-separated list (no spaces) to specify which HIP devices (0-indexed) to run distributedDataParallel api on. Might need to use HIP_VISIBLE_DEVICES to limit visiblity of devices to different processes.")
     parser.add_argument("--rank", type=int, required=False, default=None, help="Rank of this process. Required for --distributed_dataparallel")
@@ -530,12 +529,5 @@ if __name__ == '__main__':
         except:
             print("ERROR: You must install (or copy) deepspeed.profiling to use --flops-prof-step")
             sys.exit(1)
-
-    if args.fp16 and args.amp_opt_level:
-        print ("ERROR: Cannot use both --fp16 and --amp-opt-level")
-        sys.exit(1)
-    if args.amp_opt_level and not HAVE_APEX:
-        print ("ERROR: You must install apex to use --amp-opt-level")
-        sys.exit(1)
 
     main()
