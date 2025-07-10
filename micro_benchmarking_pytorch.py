@@ -263,7 +263,6 @@ def run_benchmarking(local_rank, params):
     net = params.network
     run_fp16 = params.fp16
     run_amp = params.amp
-    amp_opt_level = params.amp_opt_level
     distributed_dataparallel = params.distributed_dataparallel
     distributed_parameters = params.distributed_parameters
     batch_size = params.batch_size
