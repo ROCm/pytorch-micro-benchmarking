@@ -483,6 +483,8 @@ def run_benchmarking(local_rank, params):
             json.dump(result, f, indent=2)
     
     csv_filename = f"{args.output_dir}/benchmark_summary.csv"
+    if args.csv_filename:
+        csv_filename = args.csv_filename
     file_exists = os.path.isfile(csv_filename)
     if result:
         with open(csv_filename, "a", newline='') as csvfile:
@@ -513,6 +515,7 @@ if __name__ == '__main__':
     parser.add_argument("--compile", action='store_true', required=False, help="use pytorch 2.0")
     parser.add_argument("--compileContext", default={}, required=False, help="additional compile options")
     parser.add_argument("--amp", action='store_true', default=True, required=False, help="Automatic mixed precision benchmarking")
+    parser.add_argument("--csv-file", type=str, default="", help="assign output csv file name.")
     parser.add_argument("--mode", type=str, choices=['training', 'inference'], default="training", help="Select mode: training or inference")
     parser.add_argument("--nhwc", action='store_true', default=False, help="Use nhwc format")
     parser.add_argument("--opt-step", type=int, required=False, default=1, help="Optimizer update step")
