@@ -166,7 +166,7 @@ def get_network(net):
         print ("ERROR: not a supported model '%s'" % net)
         sys.exit(1)
 
-def forwardbackward(inp, optimizer, network, target, amp_opt_level, scaler, step=0, opt_step=1, flops_prof_step=0):
+def forwardbackward(inp, optimizer, network, target, scaler, step=0, opt_step=1, flops_prof_step=0):
     if step % opt_step == 0:
         optimizer.zero_grad()
     if flops_prof_step:
@@ -193,7 +193,7 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, scaler, step
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
 
-def forward(inp, optimizer, network, target=None, amp_opt_level=None, scaler=None, step=0, opt_step=1, flops_prof_step=0):  
+def forward(inp, optimizer, network, target=None, scaler=None, step=0, opt_step=1, flops_prof_step=0):  
     if flops_prof_step:  
         prof = FlopsProfiler(network)  
         prof.start_profile()  
@@ -262,6 +262,7 @@ def run_benchmarking(local_rank, params):
     ngpus = params.ngpus
     net = params.network
     run_fp16 = params.fp16
+    run_amp = params.amp
     amp_opt_level = params.amp_opt_level
     distributed_dataparallel = params.distributed_dataparallel
     distributed_parameters = params.distributed_parameters
@@ -377,7 +378,7 @@ def run_benchmarking(local_rank, params):
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
     for i in range(2):
-        forward_fn(inp, optimizer, network, target, amp_opt_level, scaler=scaler, step=0, opt_step=args.opt_step)
+        forward_fn(inp, optimizer, network, target, scaler=scaler, step=0, opt_step=args.opt_step)
 
     time.sleep(1)
     torch.cuda.synchronize()
@@ -398,11 +399,11 @@ def run_benchmarking(local_rank, params):
             rank = 0
             if torch.distributed.is_available() and torch.distributed.is_initialized():
                 rank = torch.distributed.get_rank()
-            # if rank == 0:
-                # print("----------- Trace Ready -----------")
-                # prof.export_chrome_trace(f"{args.profiler_output}.json")            
-            print(f"----------- Rank {rank} Trace Ready -----------")
-            prof.export_chrome_trace(f"{args.profiler_output}_rank{rank}.json")
+            if rank == 0:
+                print("----------- Trace Ready -----------")
+                prof.export_chrome_trace(f"{args.profiler_output}.json")            
+            # print(f"----------- Rank {rank} Trace Ready -----------")
+            # prof.export_chrome_trace(f"{args.profiler_output}_rank{rank}.json")
 
         tm = time.time()
         with profile(
@@ -411,7 +412,7 @@ def run_benchmarking(local_rank, params):
             on_trace_ready=trace_ready_callback) as prof:
             for i in range(iterations):
                 with record_function(f"iteration {i}"):
-                    forward_fn(inp, optimizer, network, target, amp_opt_level, scaler=scaler, step=i, opt_step=args.opt_step)
+                    forward_fn(inp, optimizer, network, target, scaler=scaler, step=i, opt_step=args.opt_step)
                 prof.step()
             torch.cuda.synchronize()
             print(prof.key_averages().table(sort_by="cuda_time_total"))
@@ -420,9 +421,9 @@ def run_benchmarking(local_rank, params):
         with torch.autograd.profiler.emit_nvtx(enabled=autograd_profiler):
             for i in range(iterations):
                 if i == flops_prof_step:
-                    forward_fn(inp, optimizer, network, target, amp_opt_level, scaler=scaler, step=i, opt_step=args.opt_step, flops_prof_step=i)
+                    forward_fn(inp, optimizer, network, target, scaler=scaler, step=i, opt_step=args.opt_step, flops_prof_step=i)
                 else:
-                    forward_fn(inp, optimizer, network, target, amp_opt_level, scaler=scaler, step=i, opt_step=args.opt_step)
+                    forward_fn(inp, optimizer, network, target, scaler=scaler, step=i, opt_step=args.opt_step)
         torch.cuda.synchronize()
 
     tm2 = time.time()
@@ -430,16 +431,8 @@ def run_benchmarking(local_rank, params):
 
     if run_fp16:
         dtype = 'FP16'
-    elif amp_opt_level == 1:
-        dtype = 'AMP-O1: Insert automatic FP16 casts around safe Pytorch functions and Tensor methods.'
-    elif amp_opt_level == 2:
-        dtype = 'AMP-O2: FP16 training with FP32 batchnorm and FP32 master weights.'
-    elif amp_opt_level == 3:
-        dtype = 'AMP-O3: Pure FP16 training.'
-    elif amp_opt_level == 4:
-        dtype = 'AMP-O4: Insert automatic BFLOAT16 casts around safe Pytorch functions and Tensor methods.'
-    elif amp_opt_level == 5:
-        dtype = 'AMP-O5: BFLOAT16 training with FP32 batchnorm and FP32 master weights.'
+    elif run_amp:
+        dtype = 'AMP: PyTorch Native Automatic Mixed Precision'
     else:
         dtype = 'FP32'
 
@@ -512,7 +505,7 @@ if __name__ == '__main__':
     parser.add_argument("--kineto", action='store_true', required=False, help="Turn kineto profiling on")
     parser.add_argument("--autograd_profiler", action='store_true', required=False, help="Use PyTorch autograd (old) profiler")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
-    parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
+    parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level. Not used anymore.")
     parser.add_argument("--distributed_dataparallel", action='store_true', required=False, help="Use torch.nn.parallel.DistributedDataParallel api to run on multiple processes/nodes. The multiple processes need to be launched manually, this script will only launch ONE process per invocation. Either use --distributed_dataparallel and manually launch multiple processes or launch this script with `torchrun`")
     parser.add_argument("--device_ids", type=str, required=False, default=None, help="Comma-separated list (no spaces) to specify which HIP devices (0-indexed) to run distributedDataParallel api on. Might need to use HIP_VISIBLE_DEVICES to limit visiblity of devices to different processes.")
     parser.add_argument("--rank", type=int, required=False, default=None, help="Rank of this process. Required for --distributed_dataparallel")
@@ -521,6 +514,7 @@ if __name__ == '__main__':
     parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
     parser.add_argument("--compile", action='store_true', required=False, help="use pytorch 2.0")
     parser.add_argument("--compileContext", default={}, required=False, help="additional compile options")
+    parser.add_argument("--amp", action='store_true', default=True, required=False, help="Automatic mixed precision benchmarking")
     parser.add_argument("--mode", type=str, choices=['training', 'inference'], default="training", help="Select mode: training or inference")
     parser.add_argument("--nhwc", action='store_true', default=False, help="Use nhwc format")
     parser.add_argument("--opt-step", type=int, required=False, default=1, help="Optimizer update step")
