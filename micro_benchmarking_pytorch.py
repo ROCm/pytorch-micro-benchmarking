@@ -155,12 +155,16 @@ def get_network_names():
 def get_network(net):
     # aux_logits=False only used by inception_v3
     if "inception_v3" == net:
+        if args.nhwc:
+            return xform(models[net](aux_logits=False))
         return models[net](aux_logits=False).to(device="cuda")
     elif net in models:
         if args.nhwc:
             return xform(models[net]())
         return models[net]().to(device="cuda")
     elif net in segmentation_models:
+        if args.nhwc:
+            return xform(segmentation_models[net]())        
         return segmentation_models[net]().to(device="cuda")
     else:
         print ("ERROR: not a supported model '%s'" % net)
@@ -172,19 +176,43 @@ def forwardbackward(inp, optimizer, network, target, scaler, step=0, opt_step=1,
     if flops_prof_step:
         prof = FlopsProfiler(network)
         prof.start_profile()
-    with autocast('cuda'):
+    
+    # AMP
+    if args.amp:
+        with autocast('cuda'):
+            out = network(inp)
+            # If using HuggingFace model outputs logits, we need to extract them
+            if hasattr(out, 'logits'):
+                logits = out.logits
+            else:
+                logits = out
+            loss_fn = torch.nn.CrossEntropyLoss().to(device="cuda")
+            if args.nhwc:
+                loss_fn = loss_fn.to(memory_format=torch.channels_last)
+            loss = loss_fn(logits, target)
+        
+        scaler.scale(loss).backward()
+        if (step + 1) % opt_step == 0:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+     # Not use amp (autocast and scaler)
+    else:
         out = network(inp)
+        # If using HuggingFace model outputs logits, we need to extract them
+        if hasattr(out, 'logits'):
+            logits = out.logits
+        else:
+            logits = out
         loss_fn = torch.nn.CrossEntropyLoss().to(device="cuda")
         if args.nhwc:
             loss_fn = loss_fn.to(memory_format=torch.channels_last)
+        loss = loss_fn(logits, target)
         
-        loss = loss_fn(out, target)
-    scaler.scale(loss).backward()
-
-    if (step + 1) % opt_step == 0:
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad()
+        loss.backward()
+        if (step + 1) % opt_step == 0:
+            optimizer.step()
+            optimizer.zero_grad()
 
     if flops_prof_step:
         # End profiler here to profile both fwd and bwd passes
@@ -193,16 +221,25 @@ def forwardbackward(inp, optimizer, network, target, scaler, step=0, opt_step=1,
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
 
-def forward(inp, optimizer, network, target=None, scaler=None, step=0, opt_step=1, flops_prof_step=0):  
+
+def forward(inp, optimizer, network, target=None, scaler=None, step=0, opt_step=1, flops_prof_step=0):
+    
     if flops_prof_step:  
         prof = FlopsProfiler(network)  
         prof.start_profile()  
   
     # Run the forward pass
-    with torch.no_grad():  # Disable gradient calculation  
-        with autocast('cuda'):
+    with torch.no_grad():  # Disable gradient calculation
+        if args.amp:
+            with autocast('cuda'):
+                out = network(inp)
+        else:
             out = network(inp)
-    
+        
+        if hasattr(out, 'logits'):
+            return out.logits
+        return out
+
     if flops_prof_step:  
         # End profiler here to profile the forward pass  
         prof.print_model_profile(profile_step=flops_prof_step)  
@@ -353,12 +390,16 @@ def run_benchmarking(local_rank, params):
 
     if (net == "inception_v3"):
         inp = torch.randn(batch_size, 3, 299, 299, device="cuda")
+        if args.nhwc:
+            inp = inp.to(memory_format=torch.channels_last)
     else:
         inp = torch.randn(batch_size, 3, 224, 224, device="cuda")
         if args.nhwc:
             inp = inp.to(memory_format=torch.channels_last)
     if (run_fp16):
         inp = inp.half()
+        if args.nhwc:
+            inp = inp.to(memory_format=torch.channels_last)
     if net in models:
         # number of classes is 1000 for imagenet
         target = torch.randint(0, 1000, (batch_size,), device="cuda")
