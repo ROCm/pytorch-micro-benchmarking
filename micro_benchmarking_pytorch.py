@@ -555,7 +555,7 @@ if __name__ == '__main__':
     parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
     parser.add_argument("--compile", action='store_true', required=False, help="use pytorch 2.0")
     parser.add_argument("--compileContext", default={}, required=False, help="additional compile options")
-    parser.add_argument("--amp", action='store_true', default=True, required=False, help="Automatic mixed precision benchmarking")
+    parser.add_argument("--amp", action='store_true', default=False, required=False, help="Automatic mixed precision benchmarking")
     parser.add_argument("--csv-file", type=str, default=None, required=False, help="assign output csv file name.")
     parser.add_argument("--mode", type=str, choices=['training', 'inference'], default="training", help="Select mode: training or inference")
     parser.add_argument("--nhwc", action='store_true', default=False, help="Use nhwc format")
