@@ -152,25 +152,25 @@ except AttributeError:
 def get_network_names():
     return sorted(list(models.keys()) + list(segmentation_models.keys()))
 
-def get_network(net):
+def get_network(net, params):
     # aux_logits=False only used by inception_v3
     if "inception_v3" == net:
-        if args.nhwc:
+        if params.nhwc:
             return xform(models[net](aux_logits=False))
         return models[net](aux_logits=False).to(device="cuda")
     elif net in models:
-        if args.nhwc:
+        if params.nhwc:
             return xform(models[net]())
         return models[net]().to(device="cuda")
     elif net in segmentation_models:
-        if args.nhwc:
+        if params.nhwc:
             return xform(segmentation_models[net]())        
         return segmentation_models[net]().to(device="cuda")
     else:
         print ("ERROR: not a supported model '%s'" % net)
         sys.exit(1)
 
-def forwardbackward(inp, optimizer, network, target, scaler, step=0, opt_step=1, flops_prof_step=0):
+def forwardbackward(inp, optimizer, network, params, target, scaler, step=0, opt_step=1, flops_prof_step=0):
     if step % opt_step == 0:
         optimizer.zero_grad()
     if flops_prof_step:
@@ -178,7 +178,7 @@ def forwardbackward(inp, optimizer, network, target, scaler, step=0, opt_step=1,
         prof.start_profile()
     
     # AMP
-    if args.amp:
+    if params.amp:
         with autocast('cuda'):
             out = network(inp)
             # If using HuggingFace model outputs logits, we need to extract them
@@ -187,7 +187,7 @@ def forwardbackward(inp, optimizer, network, target, scaler, step=0, opt_step=1,
             else:
                 logits = out
             loss_fn = torch.nn.CrossEntropyLoss().to(device="cuda")
-            if args.nhwc:
+            if params.nhwc:
                 loss_fn = loss_fn.to(memory_format=torch.channels_last)
             loss = loss_fn(logits, target)
         
@@ -205,7 +205,7 @@ def forwardbackward(inp, optimizer, network, target, scaler, step=0, opt_step=1,
         else:
             logits = out
         loss_fn = torch.nn.CrossEntropyLoss().to(device="cuda")
-        if args.nhwc:
+        if params.nhwc:
             loss_fn = loss_fn.to(memory_format=torch.channels_last)
         loss = loss_fn(logits, target)
         
@@ -222,7 +222,7 @@ def forwardbackward(inp, optimizer, network, target, scaler, step=0, opt_step=1,
         prof.end_profile()
 
 
-def forward(inp, optimizer, network, target=None, scaler=None, step=0, opt_step=1, flops_prof_step=0):
+def forward(inp, optimizer, network, params, target=None, scaler=None, step=0, opt_step=1, flops_prof_step=0):
     
     if flops_prof_step:  
         prof = FlopsProfiler(network)  
@@ -230,7 +230,7 @@ def forward(inp, optimizer, network, target=None, scaler=None, step=0, opt_step=
   
     # Run the forward pass
     with torch.no_grad():  # Disable gradient calculation
-        if args.amp:
+        if params.amp:
             with autocast('cuda'):
                 out = network(inp)
         else:
@@ -316,7 +316,7 @@ def run_benchmarking(local_rank, params):
     else:
         torch.cuda.set_device("cuda:0")
 
-    network = get_network(net)
+    network = get_network(net, params)
     if "shufflenet" == net:
         network.apply(weight_init)
 
@@ -362,7 +362,7 @@ def run_benchmarking(local_rank, params):
     sgd_opt_momentum = 0.9
     opt_learning_rate_warmup_epochs = 5
 
-    total_epochs = args.iterations
+    total_epochs = params.iterations
     optimizer = torch.optim.SGD(param_copy, lr = sgd_opt_base_learning_rate, momentum = sgd_opt_momentum, weight_decay=sgd_opt_weight_decay)
 
     def poly_decay(epoch):
@@ -390,15 +390,15 @@ def run_benchmarking(local_rank, params):
 
     if (net == "inception_v3"):
         inp = torch.randn(batch_size, 3, 299, 299, device="cuda")
-        if args.nhwc:
+        if params.nhwc:
             inp = inp.to(memory_format=torch.channels_last)
     else:
         inp = torch.randn(batch_size, 3, 224, 224, device="cuda")
-        if args.nhwc:
+        if params.nhwc:
             inp = inp.to(memory_format=torch.channels_last)
     if (run_fp16):
         inp = inp.half()
-        if args.nhwc:
+        if params.nhwc:
             inp = inp.to(memory_format=torch.channels_last)
     if net in models:
         # number of classes is 1000 for imagenet
@@ -407,7 +407,7 @@ def run_benchmarking(local_rank, params):
         # number of classes is 21 for segmentation
         target = torch.randint(0, 21, (batch_size,), device="cuda")
 
-    if args.mode == "training":
+    if params.mode == "training":
         forward_fn = forwardbackward
         network.train()
     else:
@@ -418,7 +418,7 @@ def run_benchmarking(local_rank, params):
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
     for i in range(2):
-        forward_fn(inp, optimizer, network, target, scaler=scaler, step=0, opt_step=args.opt_step)
+        forward_fn(inp, optimizer, network, params, target, scaler=scaler, step=0, opt_step=params.opt_step)
 
     time.sleep(1)
     torch.cuda.synchronize()
@@ -441,9 +441,9 @@ def run_benchmarking(local_rank, params):
                 rank = torch.distributed.get_rank()
             if rank == 0:
                 print("----------- Trace Ready -----------")
-                prof.export_chrome_trace(f"{args.profiler_output}.json")            
+                prof.export_chrome_trace(f"{params.profiler_output}.json")            
             # print(f"----------- Rank {rank} Trace Ready -----------")
-            # prof.export_chrome_trace(f"{args.profiler_output}_rank{rank}.json")
+            # prof.export_chrome_trace(f"{params.profiler_output}_rank{rank}.json")
 
         tm = time.time()
         with profile(
@@ -452,7 +452,7 @@ def run_benchmarking(local_rank, params):
             on_trace_ready=trace_ready_callback) as prof:
             for i in range(iterations):
                 with record_function(f"iteration {i}"):
-                    forward_fn(inp, optimizer, network, target, scaler=scaler, step=i, opt_step=args.opt_step)
+                    forward_fn(inp, optimizer, network, params, target, scaler=scaler, step=i, opt_step=params.opt_step)
                 prof.step()
             torch.cuda.synchronize()
             print(prof.key_averages().table(sort_by="cuda_time_total"))
@@ -461,9 +461,9 @@ def run_benchmarking(local_rank, params):
         with torch.autograd.profiler.emit_nvtx(enabled=autograd_profiler):
             for i in range(iterations):
                 if i == flops_prof_step:
-                    forward_fn(inp, optimizer, network, target, scaler=scaler, step=i, opt_step=args.opt_step, flops_prof_step=i)
+                    forward_fn(inp, optimizer, network, params, target, scaler=scaler, step=i, opt_step=params.opt_step, flops_prof_step=i)
                 else:
-                    forward_fn(inp, optimizer, network, target, scaler=scaler, step=i, opt_step=args.opt_step)
+                    forward_fn(inp, optimizer, network, params, target, scaler=scaler, step=i, opt_step=params.opt_step)
         torch.cuda.synchronize()
 
     tm2 = time.time()
@@ -477,8 +477,8 @@ def run_benchmarking(local_rank, params):
         dtype = 'FP32'
 
     result = None
-    if not args.output_dir:
-        args.output_dir = "."
+    if not params.output_dir:
+        params.output_dir = "."
 
     print ("OK: finished running benchmark..")
     print ("--------------------SUMMARY--------------------------")
@@ -489,14 +489,14 @@ def run_benchmarking(local_rank, params):
     else:
         print ("Num devices: {}".format(ngpus))
         result = {
-            "Name": args.output_file,
+            "Name": params.output_file,
             "GPUs": 1,
             "Mini batch size [img]": batch_size,
             "Mini batch size [img/gpu]": batch_size,
             "Throughput [img/sec]": batch_size / time_per_batch,
             "Time per mini-batch": time_per_batch
         }
-        with open(f"{args.output_dir}/{args.output_file}.json", "w") as f:
+        with open(f"{params.output_dir}/{params.output_file}.json", "w") as f:
             json.dump(result, f, indent=2)
     print ("Dtype: {}".format(dtype))
     print ("Mini batch size [img] : {}".format(batch_size))
@@ -513,19 +513,19 @@ def run_benchmarking(local_rank, params):
         print ("Throughput [img/sec] : {}".format(batch_size*world_size/time_per_batch))
         print ("Time per mini-batch : {}".format(time_per_batch))        
         result = {
-            "Name": args.output_file,
+            "Name": params.output_file,
             "GPUs": distributed_parameters['world_size'],
             "Mini batch size [img]": batch_size * distributed_parameters['world_size'],
             "Mini batch size [img/gpu]": batch_size,
             "Throughput [img/sec]": batch_size * distributed_parameters['world_size'] / time_per_batch,
             "Time per mini-batch": time_per_batch
         }
-        with open(f"{args.output_dir}/{args.output_file}.json", "w") as f:
+        with open(f"{params.output_dir}/{params.output_file}.json", "w") as f:
             json.dump(result, f, indent=2)
     
-    csv_filename = f"{args.output_dir}/benchmark_summary.csv"
-    if args.csv_file:
-        csv_filename = args.csv_file
+    csv_filename = f"{params.output_dir}/benchmark_summary.csv"
+    if params.csv_file:
+        csv_filename = params.csv_file
     file_exists = os.path.isfile(csv_filename)
     if result:
         with open(csv_filename, "a", newline='') as csvfile:
