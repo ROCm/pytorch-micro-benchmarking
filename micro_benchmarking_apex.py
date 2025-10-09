@@ -19,7 +19,6 @@ from apex.fp16_utils import FP16Model
 from shufflenet import shufflenet
 from shufflenet_v2 import shufflenet as shufflenet_v2
 from xception import xception
-from apex.parallel import DistributedDataParallel as DDP
 
 try:
     import torch._dynamo
@@ -301,14 +300,14 @@ def run_benchmarking(local_rank, params):
         rendezvous(distributed_parameters)
         devices_to_run_on = [local_rank]
         print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
-        network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
+        network = apex.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
         batch_size = int(batch_size / ngpus)
     elif (distributed_dataparallel):
         distributed_parameters['rank'] += local_rank
         rendezvous(distributed_parameters)
         devices_to_run_on = [(device_ids[local_rank] if device_ids else local_rank)]
         print ("INFO: Rank {} running distributed_dataparallel on devices: {}".format(distributed_parameters['rank'], str(devices_to_run_on)))
-        network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
+        network = apex.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
         batch_size = int(batch_size / ngpus)
 
     if (net == "inception_v3"):
@@ -422,7 +421,7 @@ if __name__ == '__main__':
     parser.add_argument("--autograd_profiler", action='store_true', required=False, help="Use PyTorch autograd (old) profiler")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
     parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
-    parser.add_argument("--distributed_dataparallel", action='store_true', required=False, help="Use torch.nn.parallel.DistributedDataParallel api to run on multiple processes/nodes. The multiple processes need to be launched manually, this script will only launch ONE process per invocation. Either use --distributed_dataparallel and manually launch multiple processes or launch this script with `torchrun`")
+    parser.add_argument("--distributed_dataparallel", action='store_true', required=False, help="Use apex.parallel.DistributedDataParallel api to run on multiple processes/nodes. The multiple processes need to be launched manually, this script will only launch ONE process per invocation. Either use --distributed_dataparallel and manually launch multiple processes or launch this script with `torchrun`")
     parser.add_argument("--device_ids", type=str, required=False, default=None, help="Comma-separated list (no spaces) to specify which HIP devices (0-indexed) to run distributedDataParallel api on. Might need to use HIP_VISIBLE_DEVICES to limit visiblity of devices to different processes.")
     parser.add_argument("--rank", type=int, required=False, default=None, help="Rank of this process. Required for --distributed_dataparallel")
     parser.add_argument("--world-size", type=int, required=False, default=None, help="Total number of ranks/processes. Required for --distributed_dataparallel")
