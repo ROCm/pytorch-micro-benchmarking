@@ -1,5 +1,5 @@
 import torch
-import torchvision
+import torchaudio
 import random
 import time
 import argparse
@@ -10,16 +10,8 @@ import copy
 import math
 import torch.nn as nn
 import torch.multiprocessing as mp
-try:
-    import apex
-except:
-    print ("ERROR: You must install apex to run apex microbenchmarking")
-    sys.exit(1)
-from apex.fp16_utils import FP16Model
-from shufflenet import shufflenet
-from shufflenet_v2 import shufflenet as shufflenet_v2
-from xception import xception
-from apex.parallel import DistributedDataParallel as DDP
+from fp16util import network_to_half, get_param_copy
+import torch.nn.functional as F
 
 try:
     import torch._dynamo
@@ -35,7 +27,11 @@ if "LOCAL_RANK" in os.environ:
     # this indicates we're using torchrun
     is_torchrun = True
 
-
+try:
+    import apex
+    HAVE_APEX = True
+except:
+    HAVE_APEX = False
 
 def weight_init(m):
     if isinstance(m, nn.Conv2d):
@@ -47,112 +43,19 @@ def weight_init(m):
         m.weight.data.fill_(1)
         m.bias.data.zero_()
 
-# num_classes=1000
-models = {
-        "alexnet" :            torchvision.models.alexnet,
-        "densenet121" :        torchvision.models.densenet121,
-        "densenet161" :        torchvision.models.densenet161,
-        "densenet169" :        torchvision.models.densenet169,
-        "densenet201" :        torchvision.models.densenet201,
-        "googlenet" :          torchvision.models.googlenet,
-        "inception_v3" :       torchvision.models.inception_v3,
-        "mnasnet0_5" :         torchvision.models.mnasnet0_5,
-        "mnasnet0_75" :        torchvision.models.mnasnet0_75,
-        "mnasnet1_0" :         torchvision.models.mnasnet1_0,
-        "mnasnet1_3" :         torchvision.models.mnasnet1_3,
-        "mobilenet_v2" :       torchvision.models.mobilenet_v2,
-        "resnet18" :           torchvision.models.resnet18,
-        "resnet34" :           torchvision.models.resnet34,
-        "resnet50" :           torchvision.models.resnet50,
-        "resnet101" :          torchvision.models.resnet101,
-        "resnet152" :          torchvision.models.resnet152,
-        "resnext50" :          torchvision.models.resnext50_32x4d,
-        "resnext50_32x4d" :    torchvision.models.resnext50_32x4d,
-        "resnext101" :         torchvision.models.resnext101_32x8d,
-        "resnext101_32x8d" :   torchvision.models.resnext101_32x8d,
-        "shufflenet" :         shufflenet,
-        "shufflenet_v2" :      shufflenet_v2,
-        "shufflenet_v2_x05" :  torchvision.models.shufflenet_v2_x0_5,
-        "shufflenet_v2_x10" :  torchvision.models.shufflenet_v2_x1_0,
-        "shufflenet_v2_x15" :  torchvision.models.shufflenet_v2_x1_5,
-        "shufflenet_v2_x20" :  torchvision.models.shufflenet_v2_x2_0,
-        "shufflenet_v2_x0_5" : torchvision.models.shufflenet_v2_x0_5,
-        "shufflenet_v2_x1_0" : torchvision.models.shufflenet_v2_x1_0,
-        "shufflenet_v2_x1_5" : torchvision.models.shufflenet_v2_x1_5,
-        "shufflenet_v2_x2_0" : torchvision.models.shufflenet_v2_x2_0,
-        "SqueezeNet" :         torchvision.models.squeezenet1_0,
-        "squeezenet1_0" :      torchvision.models.squeezenet1_0,
-        "SqueezeNet1.1" :      torchvision.models.squeezenet1_1,
-        "squeezenet1_1" :      torchvision.models.squeezenet1_1,
-        "vgg11" :              torchvision.models.vgg11,
-        "vgg13" :              torchvision.models.vgg13,
-        "vgg16" :              torchvision.models.vgg16,
-        "vgg19" :              torchvision.models.vgg19,
-        "vgg11_bn" :           torchvision.models.vgg11_bn,
-        "vgg13_bn" :           torchvision.models.vgg13_bn,
-        "vgg16_bn" :           torchvision.models.vgg16_bn,
-        "vgg19_bn" :           torchvision.models.vgg19_bn,
-        "wide_resnet50_2" :    torchvision.models.wide_resnet50_2,
-        "wide_resnet101_2" :   torchvision.models.wide_resnet101_2,
-        "xception" :           xception,
+#models that take waveforms as input
+waveform_models = {
+        "wav2vec2_base" : torchaudio.models.hubert_base,
 }
 
-# newer torchvision models, for backwards compat
-try:
-    models["swin_t"] = torchvision.models.swin_t
-    models["swin_s"] = torchvision.models.swin_s
-    models["swin_b"] = torchvision.models.swin_b
-    models["swin_v2_t"] = torchvision.models.swin_v2_t
-    models["swin_v2_s"] = torchvision.models.swin_v2_s
-    models["swin_v2_b"] = torchvision.models.swin_v2_b
-    models["vit_b_16"] = torchvision.models.vit_b_16
-    models["vit_b_32"] = torchvision.models.vit_b_32
-    models["vit_l_16"] = torchvision.models.vit_l_16
-    models["vit_l_32"] = torchvision.models.vit_l_32
-    models["vit_h_14"] = torchvision.models.vit_h_14
-    models["efficientnet_b0"] = torchvision.models.efficientnet_b0
-    models["efficientnet_b1"] = torchvision.models.efficientnet_b1
-    models["efficientnet_b2"] = torchvision.models.efficientnet_b2
-    models["efficientnet_b3"] = torchvision.models.efficientnet_b3
-    models["efficientnet_b4"] = torchvision.models.efficientnet_b4
-    models["efficientnet_b5"] = torchvision.models.efficientnet_b5
-    models["efficientnet_b6"] = torchvision.models.efficientnet_b6
-    models["efficientnet_b7"] = torchvision.models.efficientnet_b7
-    models["maxvit_t"] = torchvision.models.maxvit_t
-except AttributeError:
-    pass
 
-try:
-    models["mobilenet_v3_large"] = torchvision.models.mobilenet_v3_large
-    models["mobilenet_v3_small"] = torchvision.models.mobilenet_v3_small
-except AttributeError:
-    pass
-# segmentation models, num_classes=21
-segmentation_models = {
-        "fcn_resnet50" :        torchvision.models.segmentation.fcn_resnet50,
-        "fcn_resnet101" :       torchvision.models.segmentation.fcn_resnet101,
-        "deeplabv3_resnet50" :  torchvision.models.segmentation.deeplabv3_resnet50,
-        "deeplabv3_resnet101" : torchvision.models.segmentation.deeplabv3_resnet101,
-}
-
-# newer torchvision segmentation models, for backwards compat
-try:
-    segmentation_models["deeplabv3_mobilenet_v3_large"] = torchvision.models.segmentation.deeplabv3_mobilenet_v3_large
-    segmentation_models["lraspp_mobilenet_v3_large"] = torchvision.models.segmentation.lraspp_mobilenet_v3_large,
-except AttributeError:
-    pass
 
 def get_network_names():
-    return sorted(list(models.keys()) + list(segmentation_models.keys()))
+    return sorted(list(waveform_models.keys()))
 
 def get_network(net):
-    # aux_logits=False only used by inception_v3
-    if "inception_v3" == net:
-        return models[net](aux_logits=False).to(device="cuda")
-    elif net in models:
-        return models[net]().to(device="cuda")
-    elif net in segmentation_models:
-        return segmentation_models[net]().to(device="cuda")
+    if net in waveform_models:
+        return waveform_models[net](aux_num_out=29).to(device="cuda")
     else:
         print ("ERROR: not a supported model '%s'" % net)
         sys.exit(1)
@@ -162,9 +65,16 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
     if flops_prof_step:
         prof = FlopsProfiler(network)
         prof.start_profile()
-    out = network(inp)
+    logits, _ = network(inp)
+    out = F.log_softmax(logits, dim=-1)
+    target = torch.randn_like(out)
+    print ("inp", inp.shape)
+    print ("out", out.shape)
+    print ("target", target.shape)
+
+    
     # WIP: googlenet, deeplabv3_*, fcn_* missing log_softmax for this to work
-    loss = torch.nn.functional.cross_entropy(out, target)
+    loss = torch.nn.functional.mse_loss(out, target)
     # End profiler here if only to profile forward pass
 
     if amp_opt_level:
@@ -255,6 +165,9 @@ def run_benchmarking(local_rank, params):
     if "shufflenet" == net:
         network.apply(weight_init)
 
+    if (run_fp16):
+        network = network_to_half(network)
+
     if params.compile:
         compile_ctx = {"mode": None,
                        "dynamic": False,
@@ -283,19 +196,13 @@ def run_benchmarking(local_rank, params):
             print ("ERROR: requested torch.compile but this isn't pytorch 2.x")
             sys.exit(1)
 
+    param_copy = network.parameters()
     if (run_fp16):
-        network = FP16Model(network) 
-
-    #use apex syncbn
-    if args.sync_bn:
-        network = apex.parallel.convert_syncbn_model(network)
-    
-    optimizer = apex.optimizers.FusedSGD(network.parameters(), lr = 0.01, momentum = 0.9)
+        param_copy = get_param_copy(network)
+    optimizer = torch.optim.SGD(param_copy, lr = 0.01, momentum = 0.9)
 
     if (amp_opt_level):
-        network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level,
-                                                keep_batchnorm_fp32=args.keep_batchnorm_fp32,
-                                                loss_scale=args.loss_scale)
+        network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
 
     if is_torchrun:
         rendezvous(distributed_parameters)
@@ -311,19 +218,17 @@ def run_benchmarking(local_rank, params):
         network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
         batch_size = int(batch_size / ngpus)
 
-    if (net == "inception_v3"):
-        inp = torch.randn(batch_size, 3, 299, 299, device="cuda")
-    else:
-        inp = torch.randn(batch_size, 3, 224, 224, device="cuda")
-    if (run_fp16):
-        inp = inp.half()
-    if net in models:
-        # number of classes is 1000 for imagenet
-        target = torch.randint(0, 1000, (batch_size,), device="cuda")
+    if net in waveform_models:
+        inp = torch.randn(batch_size, 16000, device="cuda")
+        # number of classes is 500 for hubert
+        target = torch.randint(0, 500, (batch_size,29), device="cuda")
     elif net in segmentation_models:
         # number of classes is 21 for segmentation
         target = torch.randint(0, 21, (batch_size,), device="cuda")
-
+        
+    if (run_fp16):
+        inp = inp.half()
+    
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
     forwardbackward(inp, optimizer, network, target, amp_opt_level)
@@ -430,9 +335,6 @@ if __name__ == '__main__':
     parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
     parser.add_argument("--compile", action='store_true', required=False, help="use pytorch 2.0")
     parser.add_argument("--compileContext", default={}, required=False, help="additional compile options")
-    parser.add_argument('--sync_bn', action='store_true', help='enabling apex sync BN.')
-    parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
-    parser.add_argument('--loss-scale', type=str, default=None)
 
     args = parser.parse_args()
 
@@ -446,6 +348,8 @@ if __name__ == '__main__':
     if args.fp16 and args.amp_opt_level:
         print ("ERROR: Cannot use both --fp16 and --amp-opt-level")
         sys.exit(1)
-    
+    if args.amp_opt_level and not HAVE_APEX:
+        print ("ERROR: You must install apex to use --amp-opt-level")
+        sys.exit(1)
 
     main()
