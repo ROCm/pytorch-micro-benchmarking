@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.multiprocessing as mp
 from fp16util import network_to_half, get_param_copy
 import torch.nn.functional as F
+from torchaudio.models.decoder._ctc_decoder import ctc_decoder
 
 try:
     import torch._dynamo
@@ -33,6 +34,12 @@ try:
 except:
     HAVE_APEX = False
 
+ACOUSTIC_FEATURES_SIZE = 32
+FRAME_COUNT = 128
+HOP_LENGTH = 36
+N_FREQ = 128
+
+
 def weight_init(m):
     if isinstance(m, nn.Conv2d):
         n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -43,38 +50,212 @@ def weight_init(m):
         m.weight.data.fill_(1)
         m.bias.data.zero_()
 
-#models that take waveforms as input
-waveform_models = {
-        "wav2vec2_base" : torchaudio.models.hubert_base,
+#different audio tasks related models
+wav2vec_models = {
+    "wav2vec2_base" : torchaudio.models.wav2vec2_base,
+    "wav2vec2_large" : torchaudio.models.wav2vec2_large,
+    "wav2vec2_large_lv60k" : torchaudio.models.wav2vec2_large_lv60k,
+    "wav2vec2_xlsr_300m" : torchaudio.models.wav2vec2_xlsr_300m,
+    "wav2vec2_xlsr_1b" : torchaudio.models.wav2vec2_xlsr_1b,
+    "wav2vec2_xlsr_2b" : torchaudio.models.wav2vec2_xlsr_2b,
+    "hubert_base" :  torchaudio.models.hubert_base,
+    "hubert_large" : torchaudio.models.hubert_large,
+    "hubert_xlarge" : torchaudio.models.hubert_xlarge,
+    "wavlm_model" : torchaudio.models.wavlm_model,
+    "wavlm_base" : torchaudio.models.wavlm_base,
+    "wavlm_large" : torchaudio.models.wavlm_large,
+}
+
+speech_recognition_models = {
+    "conformer" : torchaudio.models.Conformer,
+    "deepspeech" : torchaudio.models.DeepSpeech,
+    "emformer" : torchaudio.models.Emformer,
+    "wav2letter" : torchaudio.models.Wav2Letter
+}
+
+source_separation_models = {
+    "conv_tasnet_base" : torchaudio.models.conv_tasnet_base,
+    "hdemucs_low" : torchaudio.models.hdemucs_low,
+    "hdemucs_medium" : torchaudio.models.hdemucs_medium,
+    "hdemucs_high" : torchaudio.models.hdemucs_high,
+}
+
+speech_quality_models = {
+    "squim_objective_base" : torchaudio.models.squim_objective_base,
+    "squim_subjective_base" : torchaudio.models.squim_subjective_base
+}
+
+speech_synthesis_models = {
+    "tacotron2" : torchaudio.models.Tacotron2,
+    "wavernn" : torchaudio.models.WaveRNN
+}
+
+decoder_models = {
+    "emformer_rnnt_base" : torchaudio.models.emformer_rnnt_base
 }
 
 
-
 def get_network_names():
-    return sorted(list(waveform_models.keys()))
+    return sorted(list(wav2vec_models.keys()) +
+                  list(speech_recognition_models.keys()) +
+                  list(source_separation_models.keys()) +
+                  list(speech_quality_models.keys()) + 
+                  list(speech_synthesis_models.keys()) + 
+                  list(decoder_models.keys()))
 
-def get_network(net):
-    if net in waveform_models:
-        return waveform_models[net](aux_num_out=29).to(device="cuda")
+def get_input_type(network_name):
+    if network_name in wav2vec_models or network_name in source_separation_models or network_name in speech_quality_models:
+        return "waveform"
+    elif network_name in speech_recognition_models:
+        return "acoustic features"
+    elif network_name in speech_synthesis_models:
+        if "wavernn" in network_name:
+            return "waveform"
+        else:
+            return "tokens"
+    elif network_name in decoder_models:
+        return ""
+
+def get_input(network_name, network, batch_size):
+    if network_name in wav2vec_models:
+        inp = torch.randn(batch_size, FRAME_COUNT, device="cuda")
+    elif network_name in source_separation_models:
+        if "hdemucs" in network_name:
+            inp = torch.randn(batch_size, 2, FRAME_COUNT, device="cuda")
+        else:
+            inp = torch.randn(batch_size, 1, FRAME_COUNT, device="cuda")
+    elif network_name in speech_recognition_models:
+        if "deepspeech" in network_name:
+            #number of channels must be specified for deepspeech
+            inp = torch.randn(batch_size, 1, FRAME_COUNT, ACOUSTIC_FEATURES_SIZE, device="cuda")
+        elif "wav2letter" in network_name:
+            inp = torch.randn(batch_size, ACOUSTIC_FEATURES_SIZE, FRAME_COUNT, device="cuda")
+        elif "emformer" in network_name:
+            inp = (torch.randn(batch_size, FRAME_COUNT, ACOUSTIC_FEATURES_SIZE, device="cuda"),
+                   torch.randint(1, FRAME_COUNT, (batch_size,)).to(device="cuda"))
+        elif "conformer" in network_name:
+            lengths = torch.randint(1, FRAME_COUNT, (batch_size,), device="cuda")
+            inp = (torch.rand(batch_size, int(lengths.max()), 80, device="cuda"),
+                lengths)
+        else:
+            lengths = torch.randint(1, FRAME_COUNT, (batch_size,), device="cuda")
+            inp = (lengths,
+                    torch.rand(batch_size, int(lengths.max()), network.input_dim, device="cuda"))
+    elif network_name in speech_quality_models:
+        if "subjective" in network_name:
+            inp = (torch.randn(batch_size, FRAME_COUNT, device="cuda"),
+                   torch.randn(batch_size, FRAME_COUNT, device="cuda"))
+        else:
+            inp = torch.randn(batch_size, FRAME_COUNT, device="cuda")
+    elif network_name in speech_synthesis_models:
+        if "wavernn" in network_name:
+            spec_frames = 64
+            waveform_length = HOP_LENGTH * (spec_frames - 4)
+            
+            inp = (torch.rand(batch_size, 1, waveform_length, device="cuda"),
+                   torch.rand(batch_size, 1, N_FREQ, spec_frames, device="cuda"))
+        else:
+            n_mels = 80
+            max_mel_specgram_length = 300
+            max_text_length = 100
+            inp = (torch.randint(0, 148, (batch_size, max_text_length), dtype=torch.int32, device="cuda"),
+                    max_text_length * torch.ones((batch_size,), device="cuda"),
+                    torch.rand(
+                        batch_size,
+                        n_mels,
+                        max_mel_specgram_length,
+                        device="cuda",
+                    ),
+                    max_mel_specgram_length * torch.ones((batch_size,), dtype=torch.int32, device="cuda"))
+    elif network_name in decoder_models:
+        right_context_length = 4
+        max_input_length = 61
+        max_target_length = 23
+
+        inp = (torch.rand(batch_size, max_input_length + right_context_length, 80, device="cuda"),
+                torch.randint(1, max_input_length + 1, (batch_size,), device="cuda"),
+                torch.randint(0, 256, (batch_size, max_target_length), device="cuda"),
+                torch.randint(1, max_target_length + 1, (batch_size,), device="cuda"),
+                None)
+    return inp
+
+def get_network(network_name):
+    if network_name in wav2vec_models:
+        return wav2vec_models[network_name](aux_num_out=29).to(device="cuda")
+    elif network_name in source_separation_models:
+        if "hdemucs" in network_name:
+            return source_separation_models[network_name](sources = ["vocals"]).to(device="cuda")
+        else:
+            return source_separation_models[network_name]().to(device="cuda")
+    elif network_name in speech_recognition_models:
+        if "deepspeech" in network_name:
+            return speech_recognition_models[network_name](n_feature = ACOUSTIC_FEATURES_SIZE).to(device="cuda")
+        elif "wav2letter" in network_name:
+            return speech_recognition_models[network_name](num_features = ACOUSTIC_FEATURES_SIZE).to(device="cuda")
+        elif "emformer" in network_name:
+            return speech_recognition_models[network_name](input_dim = ACOUSTIC_FEATURES_SIZE,
+                                                           num_heads=8, 
+                                                           ffn_dim=1024, 
+                                                           num_layers=20,
+                                                           segment_length=4).to(device="cuda")
+        elif "conformer" in network_name:
+            return speech_recognition_models[network_name](input_dim = 80,
+                                                           num_heads=4, 
+                                                           ffn_dim=128, 
+                                                           num_layers=4,
+                                                           depthwise_conv_kernel_size=31).to(device="cuda")
+    elif network_name in speech_quality_models:
+        return speech_quality_models[network_name]().to(device="cuda")
+    elif network_name in speech_synthesis_models:
+        if "wavernn" in network_name:
+            return speech_synthesis_models[network_name](upsample_scales = [3, 3, 4], n_classes = 10, 
+                                                         hop_length = HOP_LENGTH, n_freq = 128).to(device="cuda")
+        else:
+            return speech_synthesis_models[network_name]().to(device="cuda")
+    elif network_name in decoder_models:
+        return decoder_models[network_name](num_symbols = 256).to(device="cuda")                                                      
     else:
-        print ("ERROR: not a supported model '%s'" % net)
+        print ("ERROR: not a supported model '%s'" % network_name)
         sys.exit(1)
 
-def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_step=0):
+
+def get_output_selection(network_name):
+    if network_name in wav2vec_models:
+        return 0
+    elif "conformer" in network_name or "emformer" in network_name:
+        return 0
+    elif "objective" in network_name:
+        return 0
+    elif "tacotron2" in network_name:
+        return 1
+    return None
+
+
+def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_size, flops_prof_step=0):
     optimizer.zero_grad()
     if flops_prof_step:
         prof = FlopsProfiler(network)
         prof.start_profile()
-    logits, _ = network(inp)
-    out = F.log_softmax(logits, dim=-1)
-    target = torch.randn_like(out)
-    print ("inp", inp.shape)
-    print ("out", out.shape)
-    print ("target", target.shape)
 
+    out = network(*inp)
+    output_index = get_output_selection(network_name) 
+    if output_index is not None:
+        out = out[0]
+
+    if network_name in wav2vec_models:
+        out = F.log_softmax(out, dim=-1)
+    elif network_name in speech_recognition_models:
+        out = F.log_softmax(out, dim=-1)
     
-    # WIP: googlenet, deeplabv3_*, fcn_* missing log_softmax for this to work
+    
+
+    target = torch.randn_like(out)
+    #print ("inp", inp.shape)
+    print ("out", out.shape)
+
+    #if network_name in wav2vec_models:
     loss = torch.nn.functional.mse_loss(out, target)
+    
     # End profiler here if only to profile forward pass
 
     if amp_opt_level:
@@ -84,9 +265,6 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
         loss.backward()
 
     if flops_prof_step:
-        # End profiler here to profile both fwd and bwd passes
-        # flops = prof.get_total_flops(as_string=True)
-        # params = prof.get_total_params(as_string=True)
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
 
@@ -218,21 +396,15 @@ def run_benchmarking(local_rank, params):
         network = torch.nn.parallel.DistributedDataParallel(network, device_ids=devices_to_run_on)
         batch_size = int(batch_size / ngpus)
 
-    if net in waveform_models:
-        inp = torch.randn(batch_size, 16000, device="cuda")
-        # number of classes is 500 for hubert
-        target = torch.randint(0, 500, (batch_size,29), device="cuda")
-    elif net in segmentation_models:
-        # number of classes is 21 for segmentation
-        target = torch.randint(0, 21, (batch_size,), device="cuda")
+    inp = get_input(net, network, batch_size)
         
     if (run_fp16):
         inp = inp.half()
     
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
-    forwardbackward(inp, optimizer, network, target, amp_opt_level)
-    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size)
+    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size)
 
     time.sleep(1)
     torch.cuda.synchronize()
@@ -260,7 +432,7 @@ def run_benchmarking(local_rank, params):
             on_trace_ready=trace_ready_callback) as prof:
             for i in range(iterations):
                 with record_function(f"iteration {i}"):
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size)
                 prof.step()
             torch.cuda.synchronize()
             print(prof.key_averages().table(sort_by="cuda_time_total"))
@@ -269,9 +441,9 @@ def run_benchmarking(local_rank, params):
         with torch.autograd.profiler.emit_nvtx(enabled=autograd_profiler):
             for i in range(iterations):
                 if i == flops_prof_step:
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
+                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, i)
                 else:
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size)
         torch.cuda.synchronize()
 
     tm2 = time.time()
@@ -301,18 +473,18 @@ def run_benchmarking(local_rank, params):
     else:
       print ("Num devices: {}".format(ngpus))
     print ("Dtype: {}".format(dtype))
-    print ("Mini batch size [img] : {}".format(batch_size))
+    print ("Mini batch size [", get_input_type(net), "] : {}".format(batch_size))
     print ("Time per mini-batch : {}".format(time_per_batch))
-    print ("Throughput [img/sec] : {}".format(batch_size/time_per_batch))
+    print ("Throughput [", get_input_type(net), "/sec] : {}".format(batch_size/time_per_batch))
     if (distributed_dataparallel or is_torchrun) and distributed_parameters['rank'] == 0:
       print ("")
       print ("--------Overall (all ranks) (assuming same num/type devices for each rank)--------")
       world_size = distributed_parameters['world_size']
       print ("Num devices: {}".format(world_size))
       print ("Dtype: {}".format(dtype))
-      print ("Mini batch size [img] : {}".format(batch_size*world_size))
+      print ("Mini batch size [", get_input_type(net), "] : {}".format(batch_size*world_size))
       print ("Time per mini-batch : {}".format(time_per_batch))
-      print ("Throughput [img/sec] : {}".format(batch_size*world_size/time_per_batch))
+      print ("Throughput [", get_input_type(net), "/sec] : {}".format(batch_size*world_size/time_per_batch))
 
 def main():
     run_benchmarking_wrapper(copy.deepcopy(args))
