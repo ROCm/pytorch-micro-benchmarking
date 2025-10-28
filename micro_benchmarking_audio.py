@@ -10,8 +10,11 @@ import torch.nn as nn
 import torch.multiprocessing as mp
 from fp16util import network_to_half, get_param_copy
 import torch.nn.functional as F
-from audio.audio_model import get_network_names, get_network, get_input_type, get_input, get_output_selection
+from audio.audio_model import get_network_names, get_network
 from audio.audio_loss import get_criterion, calculate_loss
+from audio.audio_input import get_input_type, get_input
+from audio.audio_output import get_output_selection
+
 
 try:
     import torch._dynamo
