@@ -10,8 +10,8 @@ import torch.nn as nn
 import torch.multiprocessing as mp
 from fp16util import network_to_half, get_param_copy
 import torch.nn.functional as F
-from audio_model import get_network_names, get_network, get_input_type, get_input, get_output_selection
-from audio_loss import get_criterion, calculate_loss
+from audio.audio_model import get_network_names, get_network, get_input_type, get_input, get_output_selection
+from audio.audio_loss import get_criterion, calculate_loss
 
 try:
     import torch._dynamo
@@ -54,7 +54,7 @@ def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_
     out = network(**inp)
     output_index = get_output_selection(network_name) 
     if output_index is not None:
-        out = out[0]
+        out = out[output_index]
     
     loss = calculate_loss(network_name, criterion, out)
     
