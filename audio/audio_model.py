@@ -48,8 +48,10 @@ speech_synthesis_models = {
 }
 
 
-hubert_pretrain_models = {
+speech_representation_models = {
     "hubert_pretrain_base" : torchaudio.models.hubert_pretrain_base,
+    "hubert_pretrain_large" : torchaudio.models.hubert_pretrain_large,
+    "hubert_pretrain_xlarge" : torchaudio.models.hubert_pretrain_xlarge
 }
 
 def get_network_names():
@@ -58,7 +60,7 @@ def get_network_names():
                   list(source_separation_models.keys()) +
                   list(speech_quality_models.keys()) + 
                   list(speech_synthesis_models.keys()) +
-                  list(hubert_pretrain_models.keys()))
+                  list(speech_representation_models.keys()))
 
 
 def get_network(network_name):
@@ -94,8 +96,8 @@ def get_network(network_name):
                                                          hop_length = HOP_LENGTH, n_freq = 128).to(device="cuda")
         else:
             return speech_synthesis_models[network_name]().to(device="cuda")    
-    elif network_name in hubert_pretrain_models:
-        return hubert_pretrain_models[network_name]().to(device="cuda")                                       
+    elif network_name in speech_representation_models:
+        return speech_representation_models[network_name]().to(device="cuda")                                       
     else:
         print ("ERROR: not a supported model '%s'" % network_name)
         sys.exit(1)

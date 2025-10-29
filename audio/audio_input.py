@@ -56,9 +56,7 @@ def get_input(network_name, network, batch_size):
                    "token_lengths" : max_text_length * torch.ones((batch_size,), device="cuda"),
                    "mel_specgram": torch.rand(batch_size, n_mels, max_mel_specgram_length, device="cuda"),
                    "mel_specgram_lengths" : max_mel_specgram_length * torch.ones((batch_size,), dtype=torch.int32, device="cuda")}
-    elif network_name in hubert_pretrain_models:
-        
+    elif network_name in speech_representation_models:
         inp = {"waveforms" : torch.rand(batch_size, FRAME_COUNT, device="cuda"),
-               "labels" : torch.randint(0, 100, (batch_size, FRAME_COUNT), dtype=torch.int32, device="cuda"),
-               "audio_lengths" : torch.randint(1, FRAME_COUNT, (batch_size,), device="cuda")}
+               "labels" : torch.randint(0, 100, (batch_size, 2), dtype=torch.int32, device="cuda")}
     return inp

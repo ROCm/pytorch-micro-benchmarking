@@ -9,7 +9,7 @@ from audio.audio_model import *
 
 def get_criterion(network_name):
     criterion = None
-    if "hubert_pretrain" in network_name:
+    if network_name in speech_representation_models:
         criterion = hubert_loss
     elif network_name in speech_recognition_models or network_name in acoustic_models:
         char_blank = "*"
@@ -33,8 +33,7 @@ def calculate_loss(network_name, criterion, output):
     if criterion is None:
         target = torch.randn_like(output)
         return torch.nn.functional.mse_loss(output, target)
-    if "hubert_pretrain" in network_name:
-        print ("hubert", len(output), output[0].shape, output[1])
+    if network_name in speech_representation_models:
         logit_m, logit_u, feature_penalty = output
         loss = criterion(logit_m, logit_u, feature_penalty)
     elif network_name in speech_recognition_models or network_name in acoustic_models:
@@ -63,7 +62,14 @@ def calculate_loss(network_name, criterion, output):
     elif "tacotron2" in network_name:
         target = torch.randn_like(output)
         loss = criterion(output, target)
-    elif "hdemucs" in network_name or "squim" in network_name:
+    elif "hdemucs" in network_name or "subjective" in network_name:
         target = torch.randn_like(output)
         loss = criterion(output, target)
+    elif "objective" in network_name:
+        for index in range(len(output)):
+            target = torch.randn_like(output[index])
+            if index == 0:
+                loss = criterion(output[index], target)
+            else:
+                loss += criterion(output[index], target)
     return loss
