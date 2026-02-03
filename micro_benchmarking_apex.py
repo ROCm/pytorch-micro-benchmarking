@@ -19,6 +19,8 @@ from apex.fp16_utils import FP16Model
 from shufflenet import shufflenet
 from shufflenet_v2 import shufflenet as shufflenet_v2
 from xception import xception
+import csv
+import json
 
 try:
     import torch._dynamo
@@ -34,7 +36,10 @@ if "LOCAL_RANK" in os.environ:
     # this indicates we're using torchrun
     is_torchrun = True
 
-
+def xform(m: nn.Module) -> nn.Module:
+    m = m.cuda()
+    m.to(memory_format=torch.channels_last)
+    return m
 
 def weight_init(m):
     if isinstance(m, nn.Conv2d):
@@ -144,29 +149,42 @@ except AttributeError:
 def get_network_names():
     return sorted(list(models.keys()) + list(segmentation_models.keys()))
 
-def get_network(net):
+def get_network(net, params):
     # aux_logits=False only used by inception_v3
     if "inception_v3" == net:
+        if params.nhwc:
+            return xform(models[net](aux_logits=False))
         return models[net](aux_logits=False).to(device="cuda")
     elif net in models:
+        if params.nhwc:
+            return xform(models[net]())
         return models[net]().to(device="cuda")
     elif net in segmentation_models:
+        if params.nhwc:
+            return xform(segmentation_models[net]())
         return segmentation_models[net]().to(device="cuda")
     else:
         print ("ERROR: not a supported model '%s'" % net)
         sys.exit(1)
 
-def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_step=0):
-    optimizer.zero_grad()
+def forwardbackward(inp, optimizer, network, params, target, step=0, opt_step=1, flops_prof_step=0):
+    if step % opt_step == 0:
+        optimizer.zero_grad()
     if flops_prof_step:
         prof = FlopsProfiler(network)
         prof.start_profile()
     out = network(inp)
-    # WIP: googlenet, deeplabv3_*, fcn_* missing log_softmax for this to work
-    loss = torch.nn.functional.cross_entropy(out, target)
-    # End profiler here if only to profile forward pass
+    # If using HuggingFace model outputs logits, we need to extract them
+    if hasattr(out, 'logits'):
+        logits = out.logits
+    else:
+        logits = out
+    loss_fn = torch.nn.CrossEntropyLoss().to(device="cuda")
+    if params.nhwc:
+        loss_fn = loss_fn.to(memory_format=torch.channels_last)
+    loss = loss_fn(logits, target)
 
-    if amp_opt_level:
+    if params.amp_opt_level:
         with apex.amp.scale_loss(loss, optimizer) as scaled_loss:
             scaled_loss.backward()
     else:
@@ -179,7 +197,29 @@ def forwardbackward(inp, optimizer, network, target, amp_opt_level, flops_prof_s
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
 
-    optimizer.step()
+    if (step + 1) % opt_step == 0:
+        optimizer.step()
+
+def forward(inp, optimizer, network, params, target, step=0, opt_step=1, flops_prof_step=0):
+
+    if flops_prof_step:
+        prof = FlopsProfiler(network)
+        prof.start_profile()
+    out = network(inp)
+    # If using HuggingFace model outputs logits, we need to extract them
+    if hasattr(out, 'logits'):
+        logits = out.logits
+    else:
+        logits = out
+
+    if flops_prof_step:
+        # End profiler here to profile both fwd and bwd passes
+        # flops = prof.get_total_flops(as_string=True)
+        # params = prof.get_total_params(as_string=True)
+        prof.print_model_profile(profile_step=flops_prof_step)
+        prof.end_profile()
+
+    return logits
 
 def rendezvous(distributed_parameters):
     print("Initializing process group...")
@@ -250,7 +290,7 @@ def run_benchmarking(local_rank, params):
     else:
         torch.cuda.set_device("cuda:0")
 
-    network = get_network(net)
+    network = get_network(net, params)
     if "shufflenet" == net:
         network.apply(weight_init)
 
@@ -281,6 +321,17 @@ def run_benchmarking(local_rank, params):
         else:
             print ("ERROR: requested torch.compile but this isn't pytorch 2.x")
             sys.exit(1)
+
+    ## MLPerf Setting
+    sgd_opt_base_learning_rate = 0.01
+    sgd_opt_end_learning_rate = 1e-4
+    sgd_opt_learning_rate_decay_poly_power = 2
+    sgd_opt_weight_decay = 0.0001
+    sgd_opt_momentum = 0.9
+    opt_learning_rate_warmup_epochs = 5
+
+    total_epochs = params.iterations
+    optimizer = torch.optim.SGD(param_copy, lr = sgd_opt_base_learning_rate, momentum = sgd_opt_momentum, weight_decay=sgd_opt_weight_decay)
 
     if (run_fp16):
         network = FP16Model(network) 
@@ -316,6 +367,8 @@ def run_benchmarking(local_rank, params):
         inp = torch.randn(batch_size, 3, 224, 224, device="cuda")
     if (run_fp16):
         inp = inp.half()
+    if params.nhwc:
+        inp = inp.to(memory_format=torch.channels_last)
     if net in models:
         # number of classes is 1000 for imagenet
         target = torch.randint(0, 1000, (batch_size,), device="cuda")
@@ -323,10 +376,17 @@ def run_benchmarking(local_rank, params):
         # number of classes is 21 for segmentation
         target = torch.randint(0, 21, (batch_size,), device="cuda")
 
+    if params.mode == "training":
+        forward_fn = forwardbackward
+        network.train()
+    else:
+        forward_fn = forward
+        network.eval()
+
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
-    forwardbackward(inp, optimizer, network, target, amp_opt_level)
-    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+    for i in range(2):
+        forward_fn(inp, optimizer, network, params, target, step=0, opt_step=params.opt_step)
 
     time.sleep(1)
     torch.cuda.synchronize()
@@ -339,13 +399,19 @@ def run_benchmarking(local_rank, params):
             skip_first = 0,
             wait = 1,
             warmup = 2,
-            active = 2,
+            active = 5,
             repeat = 1,
         )
 
         def trace_ready_callback(prof):
-            print("----------- Trace Ready -----------")
-            prof.export_chrome_trace(f"trace{prof.step_num}.json")
+            rank = 0
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                rank = torch.distributed.get_rank()
+            if rank == 0:
+                print("----------- Trace Ready -----------")
+                prof.export_chrome_trace(f"{params.profiler_output}.json")            
+            # print(f"----------- Rank {rank} Trace Ready -----------")
+            # prof.export_chrome_trace(f"{params.profiler_output}_rank{rank}.json")
 
         tm = time.time()
         with profile(
@@ -354,7 +420,7 @@ def run_benchmarking(local_rank, params):
             on_trace_ready=trace_ready_callback) as prof:
             for i in range(iterations):
                 with record_function(f"iteration {i}"):
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+                    forward_fn(inp, optimizer, network, params, target, step=i, opt_step=params.opt_step)
                 prof.step()
             torch.cuda.synchronize()
             print(prof.key_averages().table(sort_by="cuda_time_total"))
@@ -363,9 +429,10 @@ def run_benchmarking(local_rank, params):
         with torch.autograd.profiler.emit_nvtx(enabled=autograd_profiler):
             for i in range(iterations):
                 if i == flops_prof_step:
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level, i)
+                    forward_fn(inp, optimizer, network, params, target, step=i, opt_step=params.opt_step, 
+                        flops_prof_step = i)
                 else:
-                    forwardbackward(inp, optimizer, network, target, amp_opt_level)
+                    forward_fn(inp, optimizer, network, params, target, step=i, opt_step=params.opt_step)
         torch.cuda.synchronize()
 
     tm2 = time.time()
@@ -386,27 +453,64 @@ def run_benchmarking(local_rank, params):
     else:
         dtype = 'FP32'
 
+    result = None
+    if not params.output_dir:
+        params.output_dir = "."
+
     print ("OK: finished running benchmark..")
     print ("--------------------SUMMARY--------------------------")
     print ("Microbenchmark for network : {}".format(net))
     if distributed_dataparallel or is_torchrun:
-      print ("--------This process: rank " + str(distributed_parameters['rank']) + "--------");
-      print ("Num devices: 1")
+        print ("--------This process: rank " + str(distributed_parameters['rank']) + "--------");
+        print ("Num devices: 1")
     else:
-      print ("Num devices: {}".format(ngpus))
+        print ("Num devices: {}".format(ngpus))
+        result = {
+            "Name": params.output_file,
+            "GPUs": 1,
+            "Mini batch size [img]": batch_size,
+            "Mini batch size [img/gpu]": batch_size,
+            "Throughput [img/sec]": batch_size / time_per_batch,
+            "Time per mini-batch": time_per_batch
+        }
+        with open(f"{params.output_dir}/{params.output_file}.json", "w") as f:
+            json.dump(result, f, indent=2)
+
     print ("Dtype: {}".format(dtype))
     print ("Mini batch size [img] : {}".format(batch_size))
     print ("Time per mini-batch : {}".format(time_per_batch))
     print ("Throughput [img/sec] : {}".format(batch_size/time_per_batch))
     if (distributed_dataparallel or is_torchrun) and distributed_parameters['rank'] == 0:
-      print ("")
-      print ("--------Overall (all ranks) (assuming same num/type devices for each rank)--------")
-      world_size = distributed_parameters['world_size']
-      print ("Num devices: {}".format(world_size))
-      print ("Dtype: {}".format(dtype))
-      print ("Mini batch size [img] : {}".format(batch_size*world_size))
-      print ("Time per mini-batch : {}".format(time_per_batch))
-      print ("Throughput [img/sec] : {}".format(batch_size*world_size/time_per_batch))
+        print ("")
+        print ("--------Overall (all ranks) (assuming same num/type devices for each rank)--------")
+        world_size = distributed_parameters['world_size']
+        print ("Num devices: {}".format(world_size))
+        print ("Dtype: {}".format(dtype))
+        print ("Mini batch size [img] : {}".format(batch_size*world_size))
+        print ("Time per mini-batch : {}".format(time_per_batch))
+        print ("Throughput [img/sec] : {}".format(batch_size*world_size/time_per_batch))
+        result = {
+            "Name": params.output_file,
+            "GPUs": distributed_parameters['world_size'],
+            "Mini batch size [img]": batch_size * distributed_parameters['world_size'],
+            "Mini batch size [img/gpu]": batch_size,
+            "Throughput [img/sec]": batch_size * distributed_parameters['world_size'] / time_per_batch,
+            "Time per mini-batch": time_per_batch
+        }
+        with open(f"{params.output_dir}/{params.output_file}.json", "w") as f:
+            json.dump(result, f, indent=2)
+
+    csv_filename = f"{params.output_dir}/benchmark_summary.csv"
+    if params.csv_file:
+        csv_filename = params.csv_file
+    file_exists = os.path.isfile(csv_filename)
+    if result:
+        with open(csv_filename, "a", newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            if not file_exists:
+                writer.writerow(result.keys())
+            writer.writerow(result.values())
+        print(f"Benchmark result saved to {csv_filename}")
 
 def main():
     run_benchmarking_wrapper(copy.deepcopy(args))
@@ -432,6 +536,14 @@ if __name__ == '__main__':
     parser.add_argument('--sync_bn', action='store_true', help='enabling apex sync BN.')
     parser.add_argument('--keep-batchnorm-fp32', type=str, default=None)
     parser.add_argument('--loss-scale', type=str, default=None)
+    parser.add_argument("--csv-file", type=str, default=None, required=False, help="assign output csv file name.")
+    parser.add_argument("--mode", type=str, choices=['training', 'inference'], default="training", help="Select mode: training or inference")
+    parser.add_argument("--nhwc", action='store_true', default=False, help="Use nhwc format")
+    parser.add_argument("--opt-step", type=int, required=False, default=1, help="Optimizer update step")
+    parser.add_argument("--output-dir", type=str, default="", help="assign output directory name.")
+    parser.add_argument("--output-file", type=str, default="", help="assign output file name.")
+    parser.add_argument("--profiler-output", type=str, default="", help="assign profiler output name.") 
+
 
     args = parser.parse_args()
 
