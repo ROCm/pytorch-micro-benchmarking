@@ -29,7 +29,7 @@ def get_criterion(network_name):
     return criterion
 
     
-def calculate_loss(network_name, criterion, output, target, batch_size):
+def calculate_loss(network_name, criterion, output, target, batch_size, input):
     if criterion is None:
         target = torch.randn_like(output)
         return torch.nn.functional.mse_loss(output, target)
@@ -55,9 +55,11 @@ def calculate_loss(network_name, criterion, output, target, batch_size):
         loss = criterion(output, target)
     elif "objective" in network_name:
         loss = 0
+        weights = [1, 2, 0.5, 2]
         for index in range(len(output)):
             if index == 0:
                 loss = criterion(output[index], target[index])
             else:
                 loss += criterion(output[index], target[index])
+        loss += criterion(input["x"], target[3])
     return loss

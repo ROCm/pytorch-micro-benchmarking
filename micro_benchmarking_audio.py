@@ -59,7 +59,7 @@ def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_
     if output_index is not None:
         out = out[output_index]
     
-    loss = calculate_loss(network_name, criterion, out, target, batch_size)
+    loss = calculate_loss(network_name, criterion, out, target, batch_size, inp)
     
     # End profiler here if only to profile forward pass
 

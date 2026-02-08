@@ -47,4 +47,5 @@ def create_target(network_name, network, input, batch_size):
         target = []
         for index in range(len(output)):
             target.append(torch.randn_like(output[index]))
+        target.append(torch.randn_like(input["x"]))
     return target
