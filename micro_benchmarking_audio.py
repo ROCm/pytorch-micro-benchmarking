@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from audio.audio_model import get_network_names, get_network
 from audio.audio_loss import get_criterion, calculate_loss
 from audio.audio_input import get_input_type, get_input
-from audio.audio_output import get_output_selection
+from audio.audio_output import get_output_selection, create_target
 
 
 try:
@@ -48,7 +48,7 @@ def weight_init(m):
         m.bias.data.zero_()
 
 
-def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_size, criterion, flops_prof_step=0):
+def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_size, criterion, target, flops_prof_step=0):
     optimizer.zero_grad()
     if flops_prof_step:
         prof = FlopsProfiler(network)
@@ -59,7 +59,7 @@ def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_
     if output_index is not None:
         out = out[output_index]
     
-    loss = calculate_loss(network_name, criterion, out)
+    loss = calculate_loss(network_name, criterion, out, target, batch_size)
     
     # End profiler here if only to profile forward pass
 
@@ -206,11 +206,13 @@ def run_benchmarking(local_rank, params):
         
     if (run_fp16):
         inp = inp.half()
+
+    target = create_target(net, network, inp, batch_size)
     
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
-    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion)
-    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion)
+    for i in range(2):
+        forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target)
 
     time.sleep(1)
     torch.cuda.synchronize()
@@ -238,7 +240,7 @@ def run_benchmarking(local_rank, params):
             on_trace_ready=trace_ready_callback) as prof:
             for i in range(iterations):
                 with record_function(f"iteration {i}"):
-                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion)
+                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target)
                 prof.step()
             torch.cuda.synchronize()
             print(prof.key_averages().table(sort_by="cuda_time_total"))
@@ -247,9 +249,9 @@ def run_benchmarking(local_rank, params):
         with torch.autograd.profiler.emit_nvtx(enabled=autograd_profiler):
             for i in range(iterations):
                 if i == flops_prof_step:
-                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, i)
+                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, i)
                 else:
-                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion)
+                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target)
         torch.cuda.synchronize()
 
     tm2 = time.time()
