@@ -16,6 +16,7 @@ from audio.audio_input import get_input_type, get_input
 from audio.audio_output import get_output_selection, create_target
 import csv
 import json
+from torch.amp import autocast, GradScaler
 
 try:
     import torch._dynamo
@@ -31,12 +32,6 @@ if "LOCAL_RANK" in os.environ:
     # this indicates we're using torchrun
     is_torchrun = True
 
-try:
-    import apex
-    HAVE_APEX = True
-except:
-    HAVE_APEX = False
-
 
 def weight_init(m):
     if isinstance(m, nn.Conv2d):
@@ -49,34 +44,68 @@ def weight_init(m):
         m.bias.data.zero_()
 
 
-def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_size, criterion, target, step=0, opt_step=1, flops_prof_step=0):
+def forwardbackward(inp, optimizer, network, params, network_name, batch_size, criterion, target, step=0, opt_step=1, flops_prof_step=0):
     if step % opt_step == 0:
         optimizer.zero_grad()
     if flops_prof_step:
         prof = FlopsProfiler(network)
         prof.start_profile()
 
-    out = network(**inp)
-    output_index = get_output_selection(network_name) 
-    if output_index is not None:
-        out = out[output_index]
-    
-    loss = calculate_loss(network_name, criterion, out, target, batch_size, inp)
+    if params.amp:
+        with autocast('cuda'):
+            out = network(**inp)
+        output_index = get_output_selection(network_name) 
+        if output_index is not None:
+            out = out[output_index]
+
+        loss = calculate_loss(network_name, criterion, out, target, batch_size, inp)
+        scaler.scale(loss).backward()
+        if (step + 1) % opt_step == 0:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+    else:
+        out = network(**inp)
+        output_index = get_output_selection(network_name) 
+        if output_index is not None:
+            out = out[output_index]
+        loss = calculate_loss(network_name, criterion, out, target, batch_size, inp)
+        loss.backward()
+        if (step + 1) % opt_step == 0:
+            optimizer.step()
+            optimizer.zero_grad()
     
     # End profiler here if only to profile forward pass
-
-    if amp_opt_level:
-        with apex.amp.scale_loss(loss, optimizer) as scaled_loss:
-            scaled_loss.backward()
-    else:
-        loss.backward()
 
     if flops_prof_step:
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
 
-    if (step + 1) % opt_step == 0:
-        optimizer.step()
+def forward(inp, optimizer, network, params, network_name, batch_size, criterion, target, step=0, opt_step=1, flops_prof_step=0):
+    if step % opt_step == 0:
+        optimizer.zero_grad()
+    if flops_prof_step:
+        prof = FlopsProfiler(network)
+        prof.start_profile()
+
+    if params.amp:
+        with autocast('cuda'):
+            out = network(**inp)
+        output_index = get_output_selection(network_name) 
+        if output_index is not None:
+            out = out[output_index]
+    else:
+        out = network(**inp)
+        output_index = get_output_selection(network_name) 
+        if output_index is not None:
+            out = out[output_index]
+    
+    # End profiler here if only to profile forward pass
+
+    if flops_prof_step:
+        prof.print_model_profile(profile_step=flops_prof_step)
+        prof.end_profile()
+
 
 def rendezvous(distributed_parameters):
     print("Initializing process group...")
@@ -130,7 +159,7 @@ def run_benchmarking(local_rank, params):
     ngpus = params.ngpus
     net = params.network
     run_fp16 = params.fp16
-    amp_opt_level = params.amp_opt_level
+    run_amp = params.amp
     distributed_dataparallel = params.distributed_dataparallel
     distributed_parameters = params.distributed_parameters
     batch_size = params.batch_size
@@ -198,9 +227,6 @@ def run_benchmarking(local_rank, params):
     total_epochs = params.iterations
     optimizer = torch.optim.SGD(param_copy, lr = sgd_opt_base_learning_rate, momentum = sgd_opt_momentum, weight_decay=sgd_opt_weight_decay)
 
-    if (amp_opt_level):
-        network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
-
     if is_torchrun:
         rendezvous(distributed_parameters)
         devices_to_run_on = [local_rank]
@@ -232,7 +258,7 @@ def run_benchmarking(local_rank, params):
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
     for i in range(2):
-        forward_fn(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, step=0, opt_step=params.opt_step)
+        forward_fn(inp, optimizer, network, params, net, batch_size, criterion, target, step=0, opt_step=params.opt_step)
 
     time.sleep(1)
     torch.cuda.synchronize()
@@ -266,7 +292,7 @@ def run_benchmarking(local_rank, params):
             on_trace_ready=trace_ready_callback) as prof:
             for i in range(iterations):
                 with record_function(f"iteration {i}"):
-                    forward_fn(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, step=i, opt_step=params.opt_step)
+                    forward_fn(inp, optimizer, network, params, net, batch_size, criterion, target, step=i, opt_step=params.opt_step)
                 prof.step()
             torch.cuda.synchronize()
             print(prof.key_averages().table(sort_by="cuda_time_total"))
@@ -275,9 +301,9 @@ def run_benchmarking(local_rank, params):
         with torch.autograd.profiler.emit_nvtx(enabled=autograd_profiler):
             for i in range(iterations):
                 if i == flops_prof_step:
-                    forward_fn(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, step=i, opt_step=params.opt_step, flops_prof_step=i)
+                    forward_fn(inp, optimizer, network, params, net, batch_size, criterion, target, step=i, opt_step=params.opt_step, flops_prof_step=i)
                 else:
-                    forward_fn(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, step=i, opt_step=params.opt_step)
+                    forward_fn(inp, optimizer, network, params, net, batch_size, criterion, target, step=i, opt_step=params.opt_step)
         torch.cuda.synchronize()
 
     tm2 = time.time()
@@ -285,16 +311,8 @@ def run_benchmarking(local_rank, params):
 
     if run_fp16:
         dtype = 'FP16'
-    elif amp_opt_level == 1:
-        dtype = 'AMP-O1: Insert automatic FP16 casts around safe Pytorch functions and Tensor methods.'
-    elif amp_opt_level == 2:
-        dtype = 'AMP-O2: FP16 training with FP32 batchnorm and FP32 master weights.'
-    elif amp_opt_level == 3:
-        dtype = 'AMP-O3: Pure FP16 training.'
-    elif amp_opt_level == 4:
-        dtype = 'AMP-O4: Insert automatic BFLOAT16 casts around safe Pytorch functions and Tensor methods.'
-    elif amp_opt_level == 5:
-        dtype = 'AMP-O5: BFLOAT16 training with FP32 batchnorm and FP32 master weights.'
+    elif run_amp:
+        dtype = 'AMP: PyTorch Native Automatic Mixed Precision'
     else:
         dtype = 'FP32'
 
@@ -368,7 +386,6 @@ if __name__ == '__main__':
     parser.add_argument("--kineto", action='store_true', required=False, help="Turn kineto profiling on")
     parser.add_argument("--autograd_profiler", action='store_true', required=False, help="Use PyTorch autograd (old) profiler")
     parser.add_argument("--fp16", type=int, required=False, default=0,help="FP16 mixed precision benchmarking")
-    parser.add_argument("--amp-opt-level", type=int, required=False, default=0,help="apex.amp mixed precision benchmarking opt level")
     parser.add_argument("--distributed_dataparallel", action='store_true', required=False, help="Use torch.nn.parallel.DistributedDataParallel api to run on multiple processes/nodes. The multiple processes need to be launched manually, this script will only launch ONE process per invocation. Either use --distributed_dataparallel and manually launch multiple processes or launch this script with `torchrun`")
     parser.add_argument("--device_ids", type=str, required=False, default=None, help="Comma-separated list (no spaces) to specify which HIP devices (0-indexed) to run distributedDataParallel api on. Might need to use HIP_VISIBLE_DEVICES to limit visiblity of devices to different processes.")
     parser.add_argument("--rank", type=int, required=False, default=None, help="Rank of this process. Required for --distributed_dataparallel")
@@ -377,6 +394,7 @@ if __name__ == '__main__':
     parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
     parser.add_argument("--compile", action='store_true', required=False, help="use pytorch 2.0")
     parser.add_argument("--compileContext", default={}, required=False, help="additional compile options")
+    parser.add_argument("--amp", action='store_true', default=False, required=False, help="Automatic mixed precision benchmarking")
     parser.add_argument("--csv-file", type=str, default=None, required=False, help="assign output csv file name.")
     parser.add_argument("--mode", type=str, choices=['training', 'inference'], default="training", help="Select mode: training or inference")
     parser.add_argument("--opt-step", type=int, required=False, default=1, help="Optimizer update step")
@@ -392,12 +410,5 @@ if __name__ == '__main__':
         except:
             print("ERROR: You must install (or copy) deepspeed.profiling to use --flops-prof-step")
             sys.exit(1)
-
-    if args.fp16 and args.amp_opt_level:
-        print ("ERROR: Cannot use both --fp16 and --amp-opt-level")
-        sys.exit(1)
-    if args.amp_opt_level and not HAVE_APEX:
-        print ("ERROR: You must install apex to use --amp-opt-level")
-        sys.exit(1)
 
     main()
