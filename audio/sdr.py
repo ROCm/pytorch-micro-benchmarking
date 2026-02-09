@@ -214,5 +214,5 @@ def si_sdr_loss(estimate: torch.Tensor, reference: torch.Tensor, mask: torch.Ten
     estimate = estimate - estimate.mean(axis=2, keepdim=True)
     reference = reference - reference.mean(axis=2, keepdim=True)
 
-    si_sdri = sdr.sdr_pit(estimate, reference, mask=mask)
+    si_sdri = sdr_pit(estimate, reference, mask=mask)
     return -si_sdri.mean()

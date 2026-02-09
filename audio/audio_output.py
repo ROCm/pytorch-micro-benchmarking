@@ -15,7 +15,6 @@ def create_target(network_name, network, input, batch_size):
     #get output
     output = network(**input)
     output_index = get_output_selection(network_name) 
-    print("output", output.shape)
     if output_index is not None:
         output = output[output_index]
 
@@ -43,6 +42,7 @@ def create_target(network_name, network, input, batch_size):
     elif "tacotron2" in network_name:
         target = torch.randn_like(output)
     elif "hdemucs" in network_name or "subjective" in network_name:
+        print("output", output.shape)
         target = torch.randn_like(output)
     elif "objective" in network_name:
         target = []
