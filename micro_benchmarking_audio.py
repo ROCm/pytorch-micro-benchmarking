@@ -14,7 +14,8 @@ from audio.audio_model import get_network_names, get_network
 from audio.audio_loss import get_criterion, calculate_loss
 from audio.audio_input import get_input_type, get_input
 from audio.audio_output import get_output_selection, create_target
-
+import csv
+import json
 
 try:
     import torch._dynamo
@@ -48,8 +49,9 @@ def weight_init(m):
         m.bias.data.zero_()
 
 
-def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_size, criterion, target, flops_prof_step=0):
-    optimizer.zero_grad()
+def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_size, criterion, target, step=0, opt_step=1, flops_prof_step=0):
+    if step % opt_step == 0:
+        optimizer.zero_grad()
     if flops_prof_step:
         prof = FlopsProfiler(network)
         prof.start_profile()
@@ -73,7 +75,8 @@ def forwardbackward(inp, optimizer, network, amp_opt_level, network_name, batch_
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
 
-    optimizer.step()
+    if (step + 1) % opt_step == 0:
+        optimizer.step()
 
 def rendezvous(distributed_parameters):
     print("Initializing process group...")
@@ -183,7 +186,17 @@ def run_benchmarking(local_rank, params):
     param_copy = network.parameters()
     if (run_fp16):
         param_copy = get_param_copy(network)
-    optimizer = torch.optim.SGD(param_copy, lr = 0.01, momentum = 0.9)
+    
+    ## MLPerf Setting
+    sgd_opt_base_learning_rate = 0.01
+    sgd_opt_end_learning_rate = 1e-4
+    sgd_opt_learning_rate_decay_poly_power = 2
+    sgd_opt_weight_decay = 0.0001
+    sgd_opt_momentum = 0.9
+    opt_learning_rate_warmup_epochs = 5
+
+    total_epochs = params.iterations
+    optimizer = torch.optim.SGD(param_copy, lr = sgd_opt_base_learning_rate, momentum = sgd_opt_momentum, weight_decay=sgd_opt_weight_decay)
 
     if (amp_opt_level):
         network, optimizer = apex.amp.initialize(network, optimizer, opt_level="O%d"%amp_opt_level)
@@ -208,11 +221,18 @@ def run_benchmarking(local_rank, params):
         inp = inp.half()
 
     target = create_target(net, network, inp, batch_size)
+
+    if params.mode == "training":
+        forward_fn = forwardbackward
+        network.train()
+    else:
+        forward_fn = forward
+        network.eval()
     
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
     for i in range(2):
-        forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target)
+        forward_fn(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, step=0, opt_step=params.opt_step)
 
     time.sleep(1)
     torch.cuda.synchronize()
@@ -225,13 +245,19 @@ def run_benchmarking(local_rank, params):
             skip_first = 0,
             wait = 1,
             warmup = 2,
-            active = 2,
+            active = 5,
             repeat = 1,
         )
 
         def trace_ready_callback(prof):
-            print("----------- Trace Ready -----------")
-            prof.export_chrome_trace(f"trace{prof.step_num}.json")
+            rank = 0
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                rank = torch.distributed.get_rank()
+            if rank == 0:
+                print("----------- Trace Ready -----------")
+                prof.export_chrome_trace(f"{params.profiler_output}.json")            
+            # print(f"----------- Rank {rank} Trace Ready -----------")
+            # prof.export_chrome_trace(f"{params.profiler_output}_rank{rank}.json")
 
         tm = time.time()
         with profile(
@@ -240,7 +266,7 @@ def run_benchmarking(local_rank, params):
             on_trace_ready=trace_ready_callback) as prof:
             for i in range(iterations):
                 with record_function(f"iteration {i}"):
-                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target)
+                    forward_fn(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, step=i, opt_step=params.opt_step)
                 prof.step()
             torch.cuda.synchronize()
             print(prof.key_averages().table(sort_by="cuda_time_total"))
@@ -249,9 +275,9 @@ def run_benchmarking(local_rank, params):
         with torch.autograd.profiler.emit_nvtx(enabled=autograd_profiler):
             for i in range(iterations):
                 if i == flops_prof_step:
-                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, i)
+                    forward_fn(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, step=i, opt_step=params.opt_step, flops_prof_step=i)
                 else:
-                    forwardbackward(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target)
+                    forward_fn(inp, optimizer, network, amp_opt_level, net, batch_size, criterion, target, step=i, opt_step=params.opt_step)
         torch.cuda.synchronize()
 
     tm2 = time.time()
@@ -272,27 +298,63 @@ def run_benchmarking(local_rank, params):
     else:
         dtype = 'FP32'
 
+    result = None
+    if not params.output_dir:
+        params.output_dir = "."
+
     print ("OK: finished running benchmark..")
     print ("--------------------SUMMARY--------------------------")
     print ("Microbenchmark for network : {}".format(net))
     if distributed_dataparallel or is_torchrun:
-      print ("--------This process: rank " + str(distributed_parameters['rank']) + "--------");
-      print ("Num devices: 1")
+        print ("--------This process: rank " + str(distributed_parameters['rank']) + "--------");
+        print ("Num devices: 1")
     else:
-      print ("Num devices: {}".format(ngpus))
+        print ("Num devices: {}".format(ngpus))
+        result = {
+            "Name": params.output_file,
+            "GPUs": 1,
+            "Mini batch size [img]": batch_size,
+            "Mini batch size [img/gpu]": batch_size,
+            "Throughput [img/sec]": batch_size / time_per_batch,
+            "Time per mini-batch": time_per_batch
+        }
+        with open(f"{params.output_dir}/{params.output_file}.json", "w") as f:
+            json.dump(result, f, indent=2)
     print ("Dtype: {}".format(dtype))
     print ("Mini batch size [", get_input_type(net), "] : {}".format(batch_size))
     print ("Time per mini-batch : {}".format(time_per_batch))
     print ("Throughput [", get_input_type(net), "/sec] : {}".format(batch_size/time_per_batch))
     if (distributed_dataparallel or is_torchrun) and distributed_parameters['rank'] == 0:
-      print ("")
-      print ("--------Overall (all ranks) (assuming same num/type devices for each rank)--------")
-      world_size = distributed_parameters['world_size']
-      print ("Num devices: {}".format(world_size))
-      print ("Dtype: {}".format(dtype))
-      print ("Mini batch size [", get_input_type(net), "] : {}".format(batch_size*world_size))
-      print ("Time per mini-batch : {}".format(time_per_batch))
-      print ("Throughput [", get_input_type(net), "/sec] : {}".format(batch_size*world_size/time_per_batch))
+        print ("")
+        print ("--------Overall (all ranks) (assuming same num/type devices for each rank)--------")
+        world_size = distributed_parameters['world_size']
+        print ("Num devices: {}".format(world_size))
+        print ("Dtype: {}".format(dtype))
+        print ("Mini batch size [", get_input_type(net), "] : {}".format(batch_size*world_size))
+        print ("Time per mini-batch : {}".format(time_per_batch))
+        print ("Throughput [", get_input_type(net), "/sec] : {}".format(batch_size*world_size/time_per_batch))
+        result = {
+            "Name": params.output_file,
+            "GPUs": distributed_parameters['world_size'],
+            "Mini batch size [img]": batch_size * distributed_parameters['world_size'],
+            "Mini batch size [img/gpu]": batch_size,
+            "Throughput [img/sec]": batch_size * distributed_parameters['world_size'] / time_per_batch,
+            "Time per mini-batch": time_per_batch
+        }
+        with open(f"{params.output_dir}/{params.output_file}.json", "w") as f:
+            json.dump(result, f, indent=2)
+
+    csv_filename = f"{params.output_dir}/benchmark_summary.csv"
+    if params.csv_file:
+        csv_filename = params.csv_file
+    file_exists = os.path.isfile(csv_filename)
+    if result:
+        with open(csv_filename, "a", newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            if not file_exists:
+                writer.writerow(result.keys())
+            writer.writerow(result.values())
+        print(f"Benchmark result saved to {csv_filename}")
 
 def main():
     run_benchmarking_wrapper(copy.deepcopy(args))
@@ -315,6 +377,12 @@ if __name__ == '__main__':
     parser.add_argument("--dist-url", type=str, required=False, default=None, help="url used for rendezvous of processes in distributed training. Needs to contain IP and open port of master rank0 eg. 'tcp://172.23.2.1:54321'. Required for --distributed_dataparallel")
     parser.add_argument("--compile", action='store_true', required=False, help="use pytorch 2.0")
     parser.add_argument("--compileContext", default={}, required=False, help="additional compile options")
+    parser.add_argument("--csv-file", type=str, default=None, required=False, help="assign output csv file name.")
+    parser.add_argument("--mode", type=str, choices=['training', 'inference'], default="training", help="Select mode: training or inference")
+    parser.add_argument("--opt-step", type=int, required=False, default=1, help="Optimizer update step")
+    parser.add_argument("--output-dir", type=str, default="", help="assign output directory name.")
+    parser.add_argument("--output-file", type=str, default="", help="assign output file name.")
+    parser.add_argument("--profiler-output", type=str, default="", help="assign profiler output name.") 
 
     args = parser.parse_args()
 
