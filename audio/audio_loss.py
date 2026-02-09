@@ -24,17 +24,12 @@ def get_criterion(network_name):
         criterion = si_sdr_loss
     elif "tacotron2" in network_name:
         criterion = nn.MSELoss()
-    elif "hdemucs" in network_name or "squim" in network_name:
-        criterion = nn.L1Loss()
-    elif "subjective" in network_name:
+    elif "hdemucs" in network_name or "squim" in network_name or "subjective" in network_name:
         criterion = nn.L1Loss()
     return criterion
 
     
 def calculate_loss(network_name, criterion, output, target, batch_size, input):
-    if criterion is None:
-        target = torch.randn_like(output)
-        return torch.nn.functional.mse_loss(output, target)
     if network_name in speech_representation_models:
         logit_m, logit_u, feature_penalty = output
         loss = criterion(logit_m, logit_u, feature_penalty)
@@ -51,9 +46,7 @@ def calculate_loss(network_name, criterion, output, target, batch_size, input):
     elif "conv_tasnet" in network_name:
         target, mask = target
         loss = criterion(output, target, mask)
-    elif "tacotron2" in network_name:
-        loss = criterion(output, target)
-    elif "hdemucs" in network_name or "subjective" in network_name:
+    elif "tacotron2" in network_name or "hdemucs" in network_name or "subjective" in network_name:
         loss = criterion(output, target)
     elif "objective" in network_name:
         loss = 0
