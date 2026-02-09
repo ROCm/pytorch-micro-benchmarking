@@ -26,10 +26,14 @@ def get_criterion(network_name):
         criterion = nn.MSELoss()
     elif "hdemucs" in network_name or "squim" in network_name:
         criterion = nn.L1Loss()
+    else:
+        print (f"Criterion for network name {network_name} not defined")
+        sys.exit(1)
     return criterion
 
     
 def calculate_loss(network_name, criterion, output, target, batch_size, input):
+    loss = 0
     if network_name in speech_representation_models:
         logit_m, logit_u, feature_penalty = output
         loss = criterion(logit_m, logit_u, feature_penalty)
@@ -57,4 +61,7 @@ def calculate_loss(network_name, criterion, output, target, batch_size, input):
             else:
                 loss += criterion(output[index], target[index])
         loss += criterion(input["x"], target[3])
+    else:
+        print (f"Loss function for {network_name} not defined")
+        sys.exit(1)
     return loss

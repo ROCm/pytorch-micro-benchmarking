@@ -59,4 +59,7 @@ def get_input(network_name, network, batch_size):
     elif network_name in speech_representation_models:
         inp = {"waveforms" : torch.rand(batch_size, FRAME_COUNT, device="cuda"),
                "labels" : torch.randint(0, 100, (batch_size, 2), dtype=torch.int32, device="cuda")}
+    else:
+        print (f"Input for {network_name} not defined")
+        sys.exit(1)
     return inp

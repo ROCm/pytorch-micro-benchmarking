@@ -49,4 +49,7 @@ def create_target(network_name, network, input, batch_size):
         for index in range(len(output)):
             target.append(torch.randn_like(output[index]))
         target.append(torch.randn_like(input["x"]))
+    else:
+        print (f"Target for {network_name} not defined")
+        sys.exit(1)
     return target
