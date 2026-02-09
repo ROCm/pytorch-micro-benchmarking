@@ -24,7 +24,7 @@ def get_criterion(network_name):
         criterion = si_sdr_loss
     elif "tacotron2" in network_name:
         criterion = nn.MSELoss()
-    elif "hdemucs" in network_name or "squim" in network_name or "subjective" in network_name:
+    elif "hdemucs" in network_name or "squim" in network_name:
         criterion = nn.L1Loss()
     return criterion
 
