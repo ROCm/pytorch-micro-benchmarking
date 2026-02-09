@@ -15,6 +15,7 @@ def create_target(network_name, network, input, batch_size):
     #get output
     output = network(**input)
     output_index = get_output_selection(network_name) 
+    print("output", output.shape)
     if output_index is not None:
         output = output[output_index]
 

@@ -26,6 +26,8 @@ def get_criterion(network_name):
         criterion = nn.MSELoss()
     elif "hdemucs" in network_name or "squim" in network_name:
         criterion = nn.L1Loss()
+    elif "subjective" in network_name:
+        criterion = nn.L1Loss()
     return criterion
 
     
