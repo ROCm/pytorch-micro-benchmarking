@@ -24,7 +24,9 @@ def get_criterion(network_name):
         criterion = si_sdr_loss
     elif "tacotron2" in network_name:
         criterion = nn.MSELoss()
-    elif "hdemucs" in network_name or "squim" in network_name:
+    elif "hdemucs" in network_name:
+        criterion = nn.L1Loss(reduction='none')
+    elif "squim" in network_name:
         criterion = nn.L1Loss()
     else:
         print (f"Criterion for network name {network_name} not defined")
@@ -50,7 +52,7 @@ def calculate_loss(network_name, criterion, output, target, batch_size, input):
     elif "conv_tasnet" in network_name:
         target, mask = target
         loss = criterion(output, target, mask)
-    elif "tacotron2" in network_name or "hdemucs" in network_name or "subjective" in network_name:
+    elif "tacotron2" in network_name or "subjective" in network_name:
         loss = criterion(output, target)
     elif "objective" in network_name:
         loss = 0
@@ -61,6 +63,10 @@ def calculate_loss(network_name, criterion, output, target, batch_size, input):
             else:
                 loss += criterion(output[index], target[index])
         loss += criterion(input["x"], target[3])
+    elif "hdemucs" in network_name:
+        dims = tuple(range(2, target.dim()))
+        loss = criterion(output, target)
+        loss = loss.mean(dims).mean(0)
     else:
         print (f"Loss function for {network_name} not defined")
         sys.exit(1)
