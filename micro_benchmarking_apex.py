@@ -190,15 +190,16 @@ def forwardbackward(inp, optimizer, network, params, target, step=0, opt_step=1,
     else:
         loss.backward()
 
+    if (step + 1) % opt_step == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+
     if flops_prof_step:
         # End profiler here to profile both fwd and bwd passes
         # flops = prof.get_total_flops(as_string=True)
         # params = prof.get_total_params(as_string=True)
         prof.print_model_profile(profile_step=flops_prof_step)
         prof.end_profile()
-
-    if (step + 1) % opt_step == 0:
-        optimizer.step()
 
 def forward(inp, optimizer, network, params, target, step=0, opt_step=1, flops_prof_step=0):
 
