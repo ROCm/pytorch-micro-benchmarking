@@ -417,10 +417,8 @@ def run_benchmarking(local_rank, params):
     scaler = GradScaler('cuda') 
     ## warmup.
     print ("INFO: running forward and backward for warmup.")
-    for i in range(2):
+    for i in range(20):
         forward_fn(inp, optimizer, network, params, target, scaler=scaler, step=0, opt_step=params.opt_step)
-
-    time.sleep(1)
     torch.cuda.synchronize()
 
     ## benchmark.
