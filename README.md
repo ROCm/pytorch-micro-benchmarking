@@ -1,4 +1,9 @@
 # pytorch-micro-benchmarking
+
+This repo provides microbenchmarking script for training and inferencing models in pytorch, apex and torchaudio libraries on ROCm.
+
+## Pytorch
+
 We supply a small microbenchmarking script for PyTorch training on ROCm.
 
 To execute:
@@ -37,10 +42,10 @@ python3 micro_benchmarking_pytorch.py --device_ids=1 --network resnet50 --distri
 To run FlopsProfiler (with deepspeed.profiling.flops_profiler imported):
 `python micro_benchmarking_pytorch.py --network resnet50 --amp-opt-level=2 --batch-size=256 --iterations=20 --flops-prof-step 10`
 
-## Performance tuning
+### Performance tuning
 If performance on a specific card and/or model is found to be lacking, typically some gains can be made by tuning MIOpen. For this, `export MIOPEN_FIND_ENFORCE=3` prior to running the model. This will take some time if untuned configurations are encountered and write to a local performance database. More information on this can be found in the [MIOpen documentation](https://rocm.github.io/MIOpen/doc/html/perfdatabase.html).
 
-## PyTorch 2.0
+### PyTorch 2.0
 Added the `--compile` option opens up PyTorch 2.0 capabilities, which comes with several options. Here are some notes from upstream: 
 ```
     Optimizes given model/function using TorchDynamo and specified backend.
@@ -75,3 +80,26 @@ python micro_benchmarking_pytorch.py --network resnet50 --compile --compileConte
 python micro_benchmarking_pytorch.py --network resnet50 --compile --compileContext "{'options': {'static-memory': 'True', 'matmul-padding': 'True'}}"
 ```
 Note: you cannot pass the `mode` and `options` options together.
+
+## TorchAudio
+
+The script and parameters for torchaudio are similar to pytorch.
+
+To execute:
+`python micro_benchmarking_audio.py --network <network name> [--batch-size <batch size> ] [--iterations <number of iterations>] [--fp16 <0 or 1> ] [--distributed_dataparallel] [--device_ids <comma separated list (no spaces) of GPU indices (0-indexed) to run distributed_dataparallel api on>] `
+
+Possible network names are: `wav2vec2_base`, `deepspeech`, `hdemucs_low`, `tacotron2`, `wavernn`, `wav2letter`, `hubert_base` etc.
+
+## Apex
+
+The script and parameters for torchaudio are similar to pytorch. 
+
+To execute:
+`python micro_benchmarking_apex.py --network <network name> [--batch-size <batch size> ] [--iterations <number of iterations>] [--fp16 <0 or 1> ] [--distributed_dataparallel] [--device_ids <comma separated list (no spaces) of GPU indices (0-indexed) to run distributed_dataparallel api on>] [--sync_bn] [--keep-batchnorm-fp32 <true|false>] [--loss-scale <value|dynamic>]`
+
+There are three additional parameters.
+1. `--sync_bn`: Use apex synchronized batch normalization across GPUs (useful for multi-GPU training).
+2. `--keep-batchnorm-fp32`: Keep batch norm layers in FP32 when using AMP (e.g. `--keep-batchnorm-fp32 true`). Omit with opt_level O1.
+3. `--loss-scale`: Loss scale for mixed precision. It is a number (e.g. `1024`) for static scaling, or `dynamic` for adaptive scaling.
+
+Instead of amp flag (true/false), there  is a level of amp optimization used in apex. 
